@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="tile" x1="14" y1="8" x2="112" y2="122" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#18243f"/>
+      <stop offset=".52" stop-color="#263b72"/>
+      <stop offset="1" stop-color="#37306e"/>
+    </linearGradient>
+    <linearGradient id="orbit" x1="28" y1="34" x2="99" y2="96" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a5f3fc"/>
+      <stop offset=".48" stop-color="#60a5fa"/>
+      <stop offset="1" stop-color="#c4b5fd"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="51" y1="39" x2="77" y2="85" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff"/>
+      <stop offset="1" stop-color="#dbeafe"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="matrix(0 48 -48 0 38 22)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#93c5fd" stop-opacity=".24"/>
+      <stop offset="1" stop-color="#93c5fd" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="tileClip">
+      <rect x="5" y="5" width="118" height="118" rx="34"/>
+    </clipPath>
+  </defs>
+  <rect x="5" y="5" width="118" height="118" rx="34" fill="url(#tile)"/>
+  <rect x="5.75" y="5.75" width="116.5" height="116.5" rx="33.25" stroke="#fff" stroke-opacity=".12" stroke-width="1.5"/>
+  <circle cx="39" cy="24" r="48" fill="url(#glow)" clip-path="url(#tileClip)"/>
+  <path d="M91.7 52.8a31.2 31.2 0 1 0 1.1 17.4" fill="none" stroke="url(#orbit)" stroke-linecap="round" stroke-width="7.5"/>
+  <path d="m86.7 39.3 13.7 13.2-18.8 3.1 5.1-16.3Z" fill="#a5f3fc"/>
+  <path d="M64 39v38m-14-13 14 14 14-14" fill="none" stroke="url(#arrow)" stroke-linecap="round" stroke-linejoin="round" stroke-width="7.5"/>
+  <path d="M48 88.5h32" fill="none" stroke="#fff" stroke-linecap="round" stroke-opacity=".88" stroke-width="6.5"/>
+  <path d="m34 25 2.2 5.8L42 33l-5.8 2.2L34 41l-2.2-5.8L26 33l5.8-2.2L34 25Z" fill="#e0f2fe" fill-opacity=".92"/>
+</svg>

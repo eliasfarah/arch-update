@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Central de atualizações do Arch
+Comment=Consultar e instalar atualizações completas do Arch Linux
+Exec=arch-update-center
+Icon=io.github.farah.archupdatecenter
+Terminal=false
+Categories=System;
+StartupNotify=true
