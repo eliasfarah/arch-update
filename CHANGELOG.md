@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- Usa `yay -Qu` para mostrar atualizações de repositórios e AUR.
+- Executa `yay -Syu` em um terminal interativo, para que senha, revisão de PKGBUILDs e confirmações permaneçam visíveis.
+- Permite conferir novamente a lista depois da atualização.
+
 ## 0.1.0
 
 - Primeira versão da interface GTK 4 / libadwaita em português.

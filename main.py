@@ -2,6 +2,7 @@
 """A small GTK 4 front end for complete Arch Linux system upgrades."""
 
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -23,6 +24,7 @@ class UpdateCenter(Adw.Application):
         self.connect("activate", self.on_activate)
         self.packages = []
         self.busy = False
+        self.awaiting_refresh = False
 
     def on_activate(self, _app):
         if hasattr(self, "window"):
@@ -99,15 +101,6 @@ class UpdateCenter(Adw.Application):
         self.package_scroller.set_child(self.package_list)
         content.append(self.package_scroller)
 
-        self.activity = Adw.ExpanderRow(title="Detalhes", subtitle="Informações da operação")
-        self.log = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR,
-                                monospace=True, top_margin=10, bottom_margin=10, left_margin=12, right_margin=12)
-        log_scroller = Gtk.ScrolledWindow(min_content_height=100, max_content_height=220,
-                                          hscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
-        log_scroller.set_child(self.log)
-        self.activity.add_row(log_scroller)
-        content.append(self.activity)
-
         bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
         bottom.set_margin_top(12)
         bottom.set_margin_bottom(18)
@@ -134,10 +127,12 @@ class UpdateCenter(Adw.Application):
             self.update_primary_button()
 
     def update_primary_button(self):
-        if len(self.packages) == 1:
+        if self.awaiting_refresh:
+            label = "Conferir depois da atualização"
+        elif len(self.packages) == 1:
             label = "Instalar 1 atualização"
         else:
-            label = f"Instalar {len(self.packages)} atualizações" if self.packages else "Nada na lista"
+            label = f"Abrir terminal · {len(self.packages)} atualizações" if self.packages else "Nada na lista"
         self.apply_button.set_label(label)
         self.bottom_label.set_label(
             f"{len(self.packages)} pacote" + ("s" if len(self.packages) != 1 else "")
@@ -174,7 +169,8 @@ class UpdateCenter(Adw.Application):
     def refresh(self):
         if self.busy:
             return
-        self.apply_button.set_label("Instalar atualizações")
+        self.awaiting_refresh = False
+        self.refresh_button.set_sensitive(True)
         self.set_busy(True)
         self.set_notice()
         self.summary.set_title("Procurando atualizações…")
@@ -186,19 +182,26 @@ class UpdateCenter(Adw.Application):
         threading.Thread(target=self._check_worker, daemon=True).start()
 
     def _check_worker(self):
-        pacman = shutil.which("pacman")
-        if not pacman:
-            GLib.idle_add(self._show_updates, [], "Não encontrei o pacman neste computador.", 1)
+        yay = shutil.which("yay")
+        if not yay:
+            GLib.idle_add(self._show_updates, [], "Yay não está instalado neste computador.", 1)
             return
         try:
-            p = subprocess.run([pacman, "-Qu"], capture_output=True, text=True, timeout=180)
+            p = subprocess.run([yay, "-Qu"], capture_output=True, text=True, timeout=300)
             lines = (p.stdout or "").splitlines()
             entries = []
+            foreign = subprocess.run([shutil.which("pacman") or "pacman", "-Qm"],
+                                     capture_output=True, text=True, timeout=60)
+            foreign_names = {line.split()[0] for line in foreign.stdout.splitlines() if line.split()}
             for line in lines:
-                m = re.match(r"^([^ ]+)\s+([^ ]+)\s+->\s+(.+)$", line.strip())
+                m = re.match(r"^(\S+)\s+(\S+)\s+->\s+(\S+)(?:\s+\[[^\]]+\])?$", line.strip())
                 if m:
-                    entries.append(m.groups())
-            err = p.stderr.strip()
+                    name, old, new = m.groups()
+                    source = "AUR / externo" if name in foreign_names else "Repositório"
+                    entries.append((name, old, new, source))
+            err = (p.stderr or "").strip()
+            if not entries and p.stdout.strip():
+                err = p.stdout.strip()
             GLib.idle_add(self._show_updates, entries, err, p.returncode)
         except Exception as exc:
             GLib.idle_add(self._show_updates, [], str(exc), 1)
@@ -208,13 +211,17 @@ class UpdateCenter(Adw.Application):
         self.apply_button.set_label("Instalar atualizações")
         self.packages = entries
         self.clear_packages()
-        for name, old, new in entries:
+        for name, old, new, source in entries:
             row = Adw.ActionRow(title=name, subtitle=f"Versão atual  {old}    →    Nova versão  {new}")
             row.set_title_lines(1)
             row.set_subtitle_lines(2)
             row.set_subtitle_selectable(True)
             row.set_activatable(False)
             row.package_name = name
+            source_label = Gtk.Label(label=source)
+            source_label.add_css_class("dim-label")
+            source_label.add_css_class("caption")
+            row.add_suffix(source_label)
             self.package_list.append(row)
             self.package_rows.append(row)
         self.count.set_label((f"{len(entries)} pacote" if len(entries) == 1 else f"{len(entries)} pacotes") if entries else "")
@@ -222,7 +229,7 @@ class UpdateCenter(Adw.Application):
         if entries:
             self.summary.set_title(f"{len(entries)} atualizações disponíveis")
             self.summary.set_subtitle(f"Lista salva · consultada às {datetime.now().strftime('%H:%M')}")
-            self.set_notice("Esta lista não inclui pacotes do AUR. O pacman sincroniza novamente antes da instalação.")
+            self.set_notice("A lista combina repositórios e AUR. Antes de instalar, yay atualiza a lista novamente.")
         elif not err and code in (0, 1, 2):
             self.summary.set_title("Nenhuma atualização na lista salva")
             self.summary.set_subtitle("A lista será sincronizada novamente antes de instalar")
@@ -240,7 +247,7 @@ class UpdateCenter(Adw.Application):
         dialog = Adw.MessageDialog(
             transient_for=self.window,
             heading="Instalar as atualizações?",
-            body=f"A consulta encontrou {len(self.packages)} atualizações. Antes de instalar, o pacman vai conferir a lista novamente e atualizar tudo o que estiver disponível. O sistema pedirá sua senha de administrador em uma janela segura. Mantenha o computador ligado até terminar.",
+            body=f"A consulta encontrou {len(self.packages)} atualizações entre repositórios e AUR. O yay será aberto no Terminal. Digite sua senha e responda às perguntas do yay nessa janela. Mantenha o computador ligado até terminar.",
         )
         dialog.add_response("cancel", "Cancelar")
         dialog.add_response("update", "Instalar atualizações")
@@ -251,65 +258,43 @@ class UpdateCenter(Adw.Application):
         dialog.present()
 
     def on_primary_action(self, *_):
-        self.confirm_update()
+        if self.awaiting_refresh:
+            self.refresh()
+        else:
+            self.confirm_update()
 
     def _begin_update(self, dialog, response):
         dialog.close()
         if response != "update":
             return
-        pkexec = shutil.which("pkexec")
-        pacman = shutil.which("pacman")
-        if not pkexec or not pacman:
-            self.set_notice("Não encontrei pkexec ou pacman neste sistema.", True)
+        yay = shutil.which("yay")
+        terminal = shutil.which("kgx") or shutil.which("gnome-terminal") or shutil.which("konsole") or shutil.which("xterm")
+        if not yay or not terminal:
+            self.set_notice("Preciso encontrar yay e um aplicativo de Terminal para continuar.", True)
             return
-        self.set_busy(True)
-        self.apply_button.set_sensitive(False)
-        self.activity.set_expanded(True)
-        self.log.get_buffer().set_text("Solicitando autorização do sistema…\n")
-        self.summary.set_title("Instalando atualizações…")
-        self.summary.set_subtitle("Mantenha o computador ligado. Isso pode levar alguns minutos.")
-        threading.Thread(target=self._update_worker, args=(pkexec, pacman), daemon=True).start()
-
-    def _update_worker(self, pkexec, pacman):
         try:
-            p = subprocess.Popen([pkexec, pacman, "-Syu", "--noconfirm"], stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True, bufsize=1)
-            for line in p.stdout:
-                GLib.idle_add(self._append_log, line)
-            code = p.wait()
-            GLib.idle_add(self._update_done, code)
-        except Exception as exc:
-            GLib.idle_add(self._append_log, f"\nErro: {exc}\n")
-            GLib.idle_add(self._update_done, 1)
-
-    def _append_log(self, line):
-        buf = self.log.get_buffer()
-        end = buf.get_end_iter()
-        buf.insert(end, line)
-        return GLib.SOURCE_REMOVE
-
-    def _update_done(self, code):
-        self.set_busy(False)
-        if code == 0:
-            self.summary.set_title("Atualização concluída")
-            self.summary.set_subtitle("O sistema foi atualizado com sucesso")
-            self.set_notice("Atualização concluída. Reinicie se o kernel ou componentes centrais foram atualizados.")
-            self.packages = []
-            self.clear_packages()
-            self.count.set_label("")
-            self.search.set_visible(False)
-            self.update_primary_button()
-            self.apply_button.set_sensitive(False)
-        else:
-            if code == 126:
-                self.summary.set_title("Atualização cancelada")
-                self.summary.set_subtitle("A autenticação foi cancelada ou não autorizada")
-                self.set_notice("Nenhum pacote foi atualizado. Você pode tentar novamente quando quiser.", True)
+            script = (
+                f"{shlex.quote(yay)} -Syu; result=$?; printf '\\n'; "
+                "if [ \"$result\" -eq 0 ]; then printf 'Atualização concluída.\\n'; "
+                "else printf 'O yay terminou com código %s.\\n' \"$result\"; fi; "
+                "read -r -p 'Pressione Enter para fechar esta janela… ' _"
+            )
+            if terminal.endswith("kgx") or terminal.endswith("gnome-terminal"):
+                command = [terminal, "--", "/bin/bash", "-lc", script]
+            elif terminal.endswith("konsole"):
+                command = [terminal, "-e", "/bin/bash", "-lc", script]
             else:
-                self.summary.set_title("A atualização não terminou")
-                self.summary.set_subtitle("Consulte os detalhes para ver o motivo")
-                self.set_notice("Confira a saída do pacman antes de tentar novamente.", True)
-            self.apply_button.set_sensitive(False)
+                command = [terminal, "-e", "/bin/bash", "-lc", script]
+            subprocess.Popen(command, start_new_session=True, close_fds=True)
+        except Exception as exc:
+            self.set_notice(f"Não consegui abrir o Terminal: {exc}", True)
+            return
+        self.awaiting_refresh = True
+        self.refresh_button.set_sensitive(False)
+        self.summary.set_title("Atualização aberta no Terminal")
+        self.summary.set_subtitle("Responda às perguntas por lá. Volte aqui quando terminar.")
+        self.set_notice("A senha será solicitada pelo yay no Terminal; o aplicativo não a recebe.")
+        self.update_primary_button()
         return GLib.SOURCE_REMOVE
 
 
