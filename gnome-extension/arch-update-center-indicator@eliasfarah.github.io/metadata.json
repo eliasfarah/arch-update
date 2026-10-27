@@ -1,0 +1,7 @@
+{
+  "uuid": "arch-update-center-indicator@eliasfarah.github.io",
+  "name": "Arch Update Center Indicator",
+  "description": "Verifica atualizações com yay, avisa quando encontra pacotes e abre a Central de atualizações ao clicar.",
+  "version": 1,
+  "shell-version": ["51"]
+}

@@ -130,7 +130,7 @@ class UpdateCenter(Adw.Application):
         if self.awaiting_refresh:
             label = "Conferir depois da atualização"
         elif len(self.packages) == 1:
-            label = "Instalar 1 atualização"
+            label = "Abrir terminal · 1 atualização"
         else:
             label = f"Abrir terminal · {len(self.packages)} atualizações" if self.packages else "Nada na lista"
         self.apply_button.set_label(label)
@@ -149,7 +149,16 @@ class UpdateCenter(Adw.Application):
 
     def _filter_package_row(self, row):
         query = self.search.get_text().strip().casefold()
-        return not query or query in row.package_name.casefold()
+        if not query:
+            return True
+        if getattr(row, "is_group_heading", False):
+            return any(
+                query in package_row.package_name.casefold()
+                or query in package_row.package_source.casefold()
+                for package_row in self.package_rows
+                if package_row.package_group == row.package_group
+            )
+        return query in row.package_name.casefold() or query in row.package_source.casefold()
 
     def filter_packages(self, *_):
         query = self.search.get_text().strip()
@@ -190,15 +199,37 @@ class UpdateCenter(Adw.Application):
             p = subprocess.run([yay, "-Qu"], capture_output=True, text=True, timeout=300)
             lines = (p.stdout or "").splitlines()
             entries = []
-            foreign = subprocess.run([shutil.which("pacman") or "pacman", "-Qm"],
-                                     capture_output=True, text=True, timeout=60)
+            pacman = shutil.which("pacman") or "pacman"
+            foreign = subprocess.run([pacman, "-Qm"], capture_output=True, text=True, timeout=60)
             foreign_names = {line.split()[0] for line in foreign.stdout.splitlines() if line.split()}
+            sync = subprocess.run([pacman, "-Sl"], capture_output=True, text=True, timeout=90)
+            known_repositories = {"core": 0, "extra": 1, "multilib": 2}
+            repository_by_package = {}
+            for line in sync.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 3:
+                    repository, package_name = parts[0], parts[1]
+                    if repository in known_repositories:
+                        previous = repository_by_package.get(package_name)
+                        previous_rank = known_repositories.get(previous, 99)
+                        if previous is None or known_repositories[repository] < previous_rank:
+                            repository_by_package[package_name] = repository
+                    elif package_name not in repository_by_package:
+                        repository_by_package[package_name] = repository
             for line in lines:
                 m = re.match(r"^(\S+)\s+(\S+)\s+->\s+(\S+)(?:\s+\[[^\]]+\])?$", line.strip())
                 if m:
                     name, old, new = m.groups()
-                    source = "AUR / externo" if name in foreign_names else "Repositório"
-                    entries.append((name, old, new, source))
+                    repository = repository_by_package.get(name)
+                    if name in foreign_names or repository is None:
+                        group, source = "aur", "AUR"
+                    elif repository in known_repositories:
+                        group, source = repository, repository.capitalize()
+                    else:
+                        group, source = "other", repository
+                    entries.append((name, old, new, group, source))
+            group_order = {"core": 0, "extra": 1, "multilib": 2, "aur": 3, "other": 4}
+            entries.sort(key=lambda item: (group_order[item[3]], item[0].casefold()))
             err = (p.stderr or "").strip()
             if not entries and p.stdout.strip():
                 err = p.stdout.strip()
@@ -211,19 +242,49 @@ class UpdateCenter(Adw.Application):
         self.apply_button.set_label("Instalar atualizações")
         self.packages = entries
         self.clear_packages()
-        for name, old, new, source in entries:
+        current_group = None
+        group_titles = {
+            "core": "Core",
+            "extra": "Extra",
+            "multilib": "Multilib",
+            "aur": "AUR",
+            "other": "Outros repositórios",
+        }
+        for name, old, new, group, source in entries:
+            if group != current_group:
+                heading = Gtk.ListBoxRow()
+                heading.set_selectable(False)
+                heading.set_activatable(False)
+                heading.is_group_heading = True
+                heading.package_group = group
+                heading_label = Gtk.Label(label=group_titles[group], xalign=0)
+                heading_label.add_css_class("heading")
+                heading_label.add_css_class("dim-label")
+                heading_label.set_margin_top(12)
+                heading_label.set_margin_bottom(4)
+                heading_label.set_margin_start(16)
+                heading_label.set_margin_end(16)
+                heading.set_child(heading_label)
+                self.package_list.append(heading)
+                current_group = group
             row = Adw.ActionRow(title=name, subtitle=f"Versão atual  {old}    →    Nova versão  {new}")
             row.set_title_lines(1)
             row.set_subtitle_lines(2)
             row.set_subtitle_selectable(True)
             row.set_activatable(False)
-            row.package_name = name
             source_label = Gtk.Label(label=source)
             source_label.add_css_class("dim-label")
             source_label.add_css_class("caption")
             row.add_suffix(source_label)
-            self.package_list.append(row)
-            self.package_rows.append(row)
+            package_row = Gtk.ListBoxRow()
+            package_row.set_selectable(False)
+            package_row.set_activatable(False)
+            package_row.package_name = name
+            package_row.package_source = source.casefold()
+            package_row.package_group = group
+            package_row.set_child(row)
+            self.package_list.append(package_row)
+            self.package_rows.append(package_row)
         self.count.set_label((f"{len(entries)} pacote" if len(entries) == 1 else f"{len(entries)} pacotes") if entries else "")
         self.search.set_visible(bool(entries))
         if entries:

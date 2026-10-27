@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- Adiciona extensão GNOME para consultar yay periodicamente e notificar quando encontrar atualizações.
+- O ícone da barra superior abre diretamente a Central de atualizações.
+- O instalador instala e ativa a extensão para o usuário atual.
+- Agrupa os pacotes na Central por Core, Extra, Multilib e AUR.
+
 ## 0.2.0
 
 - Usa `yay -Qu` para mostrar atualizações de repositórios e AUR.
