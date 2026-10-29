@@ -4,7 +4,7 @@ Interface GTK 4 / libadwaita em português para revisar pacotes e executar atual
 
 ## Instalação
 
-Requer Arch Linux com GNOME Shell 51, `yay`, Python 3, PyGObject, GTK 4, libadwaita e um terminal gráfico (GNOME Console/`kgx` recomendado).
+Requer Arch Linux com GNOME Shell 51, `yay`, `sudo`, Python 3, PyGObject, GTK 4 e libadwaita.
 
 Clone ou extraia o projeto e execute:
 
@@ -19,8 +19,10 @@ O instalador também ativa o indicador do GNOME. Ele consulta `yay -Qu` a cada 1
 
 - A lista usa `yay -Qu` e inclui atualizações dos repositórios e do AUR. A consulta não instala pacotes.
 - Os pacotes aparecem agrupados em Core, Extra, Multilib e AUR; repositórios personalizados ficam em Outros repositórios.
-- A lista pode estar desatualizada. Antes de instalar, clique em **Abrir terminal**; o app abre `yay -Syu` para sincronizar os repositórios e revisar as perguntas do yay.
-- Digite a senha e responda às perguntas do yay no Terminal. O aplicativo não recebe nem guarda a senha.
-- Ao terminar, volte ao app e clique em **Conferir depois da atualização** para atualizar a lista.
+- A lista pode estar desatualizada. Ao instalar, o `yay -Syu` sincroniza os repositórios e pode encontrar atualizações adicionais.
+- A senha é pedida em um diálogo da Central e enviada ao `sudo` por um canal local privado; ela não é gravada em arquivo nem exibida no registro.
+- Ao confirmar na Central, o yay usa `--noconfirm` para instalar tudo que encontrar após sincronizar, sem novas perguntas. A lista pode mudar desde a prévia mostrada.
+- Com `--noconfirm`, o yay não abre a revisão interativa de diferenças dos pacotes do AUR. Confira os pacotes mostrados na Central antes de confirmar.
+- Ao terminar, clique em **Conferir atualizações** para atualizar a lista.
 
-O Terminal mostra a saída da operação e as perguntas do yay. Como a atualização é completa, mantenha o computador ligado até o processo terminar.
+Como a atualização é completa, mantenha o computador ligado até o processo terminar.

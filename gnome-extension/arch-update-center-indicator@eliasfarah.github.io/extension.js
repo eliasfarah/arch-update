@@ -6,6 +6,7 @@ import Clutter from 'gi://Clutter';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 const CHECK_INTERVAL_SECONDS = 15 * 60;
 const INITIAL_DELAY_SECONDS = 12;
@@ -18,17 +19,23 @@ export default class ArchUpdateCenterIndicator extends Extension {
         this._previousSignature = null;
         this._count = 0;
 
-        this._button = new St.Button({
-            style_class: 'panel-button',
-            reactive: true,
-            can_focus: true,
-            track_hover: true,
-            accessible_name: 'Atualizações do Arch',
+        this._button = new PanelMenu.Button(0.0, 'Atualizações do Arch', true);
+        const click = new Clutter.ClickGesture();
+        click.connect('recognize', () => this._openUpdateCenter());
+        this._button.add_action(click);
+        const keyboard = new Clutter.KeyController();
+        keyboard.connect('key-press', controller => {
+            const [, key] = controller.get_key();
+            if (key === Clutter.KEY_Return || key === Clutter.KEY_KP_Enter || key === Clutter.KEY_space) {
+                this._openUpdateCenter();
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
         });
-        this._button.connect('clicked', () => this._openUpdateCenter());
+        this._button.add_action(keyboard);
         this._button.set_accessible_name('Atualizações do Arch: verificando');
 
-        const box = new St.BoxLayout({style_class: 'panel-status-menu-box', spacing: 6});
+        const box = new St.BoxLayout({style_class: 'panel-status-menu-box'});
         this._icon = new St.Icon({
             icon_name: 'software-update-available-symbolic',
             style_class: 'system-status-icon',
@@ -39,8 +46,29 @@ export default class ArchUpdateCenterIndicator extends Extension {
         });
         box.add_child(this._icon);
         box.add_child(this._countLabel);
-        this._button.set_child(box);
+        this._button.add_child(box);
         Main.panel.addToStatusArea(this.uuid, this._button, 1, 'right');
+
+        const refreshDirectory = GLib.build_filenamev([
+            GLib.get_user_cache_dir(),
+            'arch-update-center',
+        ]);
+        try {
+            this._refreshMonitor = Gio.File.new_for_path(refreshDirectory)
+                .monitor_directory(Gio.FileMonitorFlags.NONE, null);
+            this._refreshMonitor.connect('changed', (_monitor, file, otherFile, eventType) => {
+                const isRefreshRequest = file?.get_basename() === 'refresh-request' ||
+                    otherFile?.get_basename() === 'refresh-request';
+                const isArrival = eventType === Gio.FileMonitorEvent.CREATED ||
+                    eventType === Gio.FileMonitorEvent.MOVED_IN ||
+                    eventType === Gio.FileMonitorEvent.RENAMED ||
+                    eventType === Gio.FileMonitorEvent.CHANGES_DONE_HINT;
+                if (!this._disabled && isRefreshRequest && isArrival)
+                    this._checkUpdates();
+            });
+        } catch (error) {
+            console.error(`[${this.uuid}] Não foi possível observar atualizações da Central: ${error.message}`);
+        }
 
         this._initialTimer = GLib.timeout_add_seconds(
             GLib.PRIORITY_DEFAULT,
@@ -71,6 +99,8 @@ export default class ArchUpdateCenterIndicator extends Extension {
             GLib.Source.remove(this._periodicTimer);
             this._periodicTimer = 0;
         }
+        this._refreshMonitor?.cancel();
+        this._refreshMonitor = null;
         this._button?.destroy();
         this._button = null;
     }

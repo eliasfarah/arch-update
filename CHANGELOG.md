@@ -1,5 +1,10 @@
 # Changelog
 
+## Em desenvolvimento
+
+- Executa o yay na Central, com diálogo de senha e respostas às perguntas na própria janela.
+- Corrige a extensão para os componentes de barra do GNOME Shell 51.
+
 ## 0.3.0
 
 - Adiciona extensão GNOME para consultar yay periodicamente e notificar quando encontrar atualizações.

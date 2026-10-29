@@ -1,10 +1,12 @@
 #!/usr/bin/python3
 """A small GTK 4 front end for complete Arch Linux system upgrades."""
 
+import os
 import re
-import shlex
 import shutil
 import subprocess
+import sys
+import tempfile
 import threading
 from datetime import datetime
 
@@ -13,6 +15,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk
+from update_backend import UpdateSession
 
 
 APP_ID = "io.github.farah.archupdatecenter"
@@ -24,7 +27,14 @@ class UpdateCenter(Adw.Application):
         self.connect("activate", self.on_activate)
         self.packages = []
         self.busy = False
+        self.query_ok = False
         self.awaiting_refresh = False
+        self.operation_active = False
+        self.session = None
+        self.password_dialog = None
+        self.password_request = None
+        self.prompt_tail = ""
+        self.response_secret = False
 
     def on_activate(self, _app):
         if hasattr(self, "window"):
@@ -33,6 +43,7 @@ class UpdateCenter(Adw.Application):
         self.window = Adw.ApplicationWindow(application=self, title="Atualizações do sistema")
         self.window.set_default_size(840, 720)
         self.window.set_size_request(580, 520)
+        self.window.connect("close-request", self._on_close_request)
         self.build_ui()
         self.window.present()
         self.refresh()
@@ -58,13 +69,13 @@ class UpdateCenter(Adw.Application):
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, vexpand=True)
         page.set_child(content)
 
-        title = Gtk.Label(label="Revise antes de instalar", xalign=0)
-        title.add_css_class("title-1")
-        subtitle = Gtk.Label(label="Confira os nomes e as versões que serão atualizadas.", xalign=0)
-        subtitle.add_css_class("dim-label")
-        subtitle.set_wrap(True)
-        content.append(title)
-        content.append(subtitle)
+        self.page_title = Gtk.Label(label="Revise antes de instalar", xalign=0)
+        self.page_title.add_css_class("title-1")
+        self.page_subtitle = Gtk.Label(label="Confira os nomes e as versões que serão atualizadas.", xalign=0)
+        self.page_subtitle.add_css_class("dim-label")
+        self.page_subtitle.set_wrap(True)
+        content.append(self.page_title)
+        content.append(self.page_subtitle)
 
         self.summary = Adw.ActionRow(title="Procurando atualizações…", subtitle="A lista de pacotes aparecerá aqui")
         self.summary.set_icon_name("system-software-update-symbolic")
@@ -76,17 +87,23 @@ class UpdateCenter(Adw.Application):
         self.notice.set_revealed(False)
         content.append(self.notice)
 
+        self.pages = Gtk.Stack(vexpand=True)
+        self.pages.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        content.append(self.pages)
+        self.package_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, vexpand=True)
+        self.pages.add_named(self.package_page, "packages")
+
         section_head = Gtk.Box(spacing=8)
         section_title = Gtk.Label(label="Pacotes a atualizar", xalign=0, hexpand=True)
         section_title.add_css_class("heading")
         self.count = Gtk.Label(label="", css_classes=["dim-label", "caption"])
         section_head.append(section_title)
         section_head.append(self.count)
-        content.append(section_head)
+        self.package_page.append(section_head)
 
         self.search = Gtk.SearchEntry(placeholder_text="Buscar pacote pelo nome…")
         self.search.connect("search-changed", self.filter_packages)
-        content.append(self.search)
+        self.package_page.append(self.search)
 
         self.package_placeholder = Gtk.Label(label="Nenhuma atualização disponível", margin_top=24, margin_bottom=24)
         self.package_placeholder.add_css_class("dim-label")
@@ -99,7 +116,52 @@ class UpdateCenter(Adw.Application):
                                                    hscrollbar_policy=Gtk.PolicyType.NEVER)
         self.package_scroller.add_css_class("card")
         self.package_scroller.set_child(self.package_list)
-        content.append(self.package_scroller)
+        self.package_page.append(self.package_scroller)
+
+        self.operation_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, vexpand=True)
+        self.pages.add_named(self.operation_page, "operation")
+        operation_header = Gtk.Box(spacing=10)
+        self.operation_spinner = Gtk.Spinner()
+        operation_header.append(self.operation_spinner)
+        self.operation_label = Gtk.Label(label="Preparando a atualização…", xalign=0, hexpand=True)
+        self.operation_label.add_css_class("heading")
+        operation_header.append(self.operation_label)
+        self.respond_button = Gtk.Button(label="Responder pergunta")
+        self.respond_button.connect("clicked", self._show_response_controls)
+        operation_header.append(self.respond_button)
+        self.operation_page.append(operation_header)
+
+        self.operation_log = Gtk.TextView(editable=False, cursor_visible=False,
+                                         wrap_mode=Gtk.WrapMode.WORD_CHAR, monospace=True,
+                                         top_margin=12, bottom_margin=12, left_margin=12, right_margin=12)
+        log_scroller = Gtk.ScrolledWindow(vexpand=True, min_content_height=160,
+                                          hscrollbar_policy=Gtk.PolicyType.NEVER)
+        log_scroller.add_css_class("card")
+        log_scroller.set_child(self.operation_log)
+        self.operation_page.append(log_scroller)
+
+        self.response_revealer = Gtk.Revealer(reveal_child=False)
+        response_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.response_hint = Gtk.Label(label="Responda à pergunta acima. A senha será pedida em um diálogo da Central.", xalign=0)
+        self.response_hint.set_wrap(True)
+        self.response_hint.add_css_class("dim-label")
+        response_box.append(self.response_hint)
+        response_buttons = Gtk.Box(spacing=8)
+        for label, value in (("Sim", "y"), ("Não", "n"), ("Continuar", "")):
+            button = Gtk.Button(label=label)
+            button.connect("clicked", lambda _button, answer=value: self._send_response(answer))
+            response_buttons.append(button)
+        response_box.append(response_buttons)
+        response_entry_row = Gtk.Box(spacing=8)
+        self.response_entry = Gtk.Entry(placeholder_text="Outra resposta", hexpand=True)
+        self.response_entry.connect("activate", lambda *_: self._send_response(self.response_entry.get_text()))
+        response_entry_row.append(self.response_entry)
+        send_button = Gtk.Button(label="Enviar")
+        send_button.connect("clicked", lambda *_: self._send_response(self.response_entry.get_text()))
+        response_entry_row.append(send_button)
+        response_box.append(response_entry_row)
+        self.response_revealer.set_child(response_box)
+        self.operation_page.append(self.response_revealer)
 
         bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
         bottom.set_margin_top(12)
@@ -128,11 +190,11 @@ class UpdateCenter(Adw.Application):
 
     def update_primary_button(self):
         if self.awaiting_refresh:
-            label = "Conferir depois da atualização"
+            label = "Conferir atualizações"
         elif len(self.packages) == 1:
-            label = "Abrir terminal · 1 atualização"
+            label = "Instalar 1 atualização"
         else:
-            label = f"Abrir terminal · {len(self.packages)} atualizações" if self.packages else "Nada na lista"
+            label = f"Instalar {len(self.packages)} atualizações" if self.packages else "Verificar e atualizar"
         self.apply_button.set_label(label)
         self.bottom_label.set_label(
             f"{len(self.packages)} pacote" + ("s" if len(self.packages) != 1 else "")
@@ -179,6 +241,10 @@ class UpdateCenter(Adw.Application):
         if self.busy:
             return
         self.awaiting_refresh = False
+        self.query_ok = False
+        self.pages.set_visible_child_name("packages")
+        self.page_title.set_label("Revise antes de instalar")
+        self.page_subtitle.set_label("Confira os nomes e as versões que serão atualizadas.")
         self.refresh_button.set_sensitive(True)
         self.set_busy(True)
         self.set_notice()
@@ -241,6 +307,7 @@ class UpdateCenter(Adw.Application):
         self.set_busy(False)
         self.apply_button.set_label("Instalar atualizações")
         self.packages = entries
+        self.query_ok = bool(entries) or (not err and code in (0, 1, 2))
         self.clear_packages()
         current_group = None
         group_titles = {
@@ -276,87 +343,215 @@ class UpdateCenter(Adw.Application):
             source_label.add_css_class("dim-label")
             source_label.add_css_class("caption")
             row.add_suffix(source_label)
-            package_row = Gtk.ListBoxRow()
-            package_row.set_selectable(False)
-            package_row.set_activatable(False)
-            package_row.package_name = name
-            package_row.package_source = source.casefold()
-            package_row.package_group = group
-            package_row.set_child(row)
-            self.package_list.append(package_row)
-            self.package_rows.append(package_row)
+            row.set_selectable(False)
+            row.package_name = name
+            row.package_source = source.casefold()
+            row.package_group = group
+            self.package_list.append(row)
+            self.package_rows.append(row)
         self.count.set_label((f"{len(entries)} pacote" if len(entries) == 1 else f"{len(entries)} pacotes") if entries else "")
         self.search.set_visible(bool(entries))
         if entries:
             self.summary.set_title(f"{len(entries)} atualizações disponíveis")
             self.summary.set_subtitle(f"Lista salva · consultada às {datetime.now().strftime('%H:%M')}")
-            self.set_notice("A lista combina repositórios e AUR. Antes de instalar, yay atualiza a lista novamente.")
+            self.set_notice("Ao clicar em Instalar, yay sincroniza e instala tudo que encontrar, sem outra confirmação. A lista pode mudar desde esta prévia.")
         elif not err and code in (0, 1, 2):
             self.summary.set_title("Nenhuma atualização na lista salva")
             self.summary.set_subtitle("A lista será sincronizada novamente antes de instalar")
+            self.set_notice("Clique em Verificar e atualizar para sincronizar e instalar automaticamente qualquer atualização encontrada.")
         else:
             self.summary.set_title("Não foi possível procurar atualizações")
             self.summary.set_subtitle("Confira a conexão e tente novamente")
             self.set_notice(err or "Confira a conexão com a internet e tente novamente.", True)
-        self.apply_button.set_sensitive(bool(entries))
+        self.apply_button.set_sensitive(self.query_ok)
         self.update_primary_button()
         return GLib.SOURCE_REMOVE
-
-    def confirm_update(self, *_):
-        if self.busy or not self.packages:
-            return
-        dialog = Adw.MessageDialog(
-            transient_for=self.window,
-            heading="Instalar as atualizações?",
-            body=f"A consulta encontrou {len(self.packages)} atualizações entre repositórios e AUR. O yay será aberto no Terminal. Digite sua senha e responda às perguntas do yay nessa janela. Mantenha o computador ligado até terminar.",
-        )
-        dialog.add_response("cancel", "Cancelar")
-        dialog.add_response("update", "Instalar atualizações")
-        dialog.set_response_appearance("update", Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_default_response("update")
-        dialog.set_close_response("cancel")
-        dialog.connect("response", self._begin_update)
-        dialog.present()
 
     def on_primary_action(self, *_):
         if self.awaiting_refresh:
             self.refresh()
         else:
-            self.confirm_update()
+            self._begin_update()
 
-    def _begin_update(self, dialog, response):
-        dialog.close()
-        if response != "update":
+    def _begin_update(self):
+        if self.busy or not self.query_ok:
             return
         yay = shutil.which("yay")
-        terminal = shutil.which("kgx") or shutil.which("gnome-terminal") or shutil.which("konsole") or shutil.which("xterm")
-        if not yay or not terminal:
-            self.set_notice("Preciso encontrar yay e um aplicativo de Terminal para continuar.", True)
+        sudo = shutil.which("sudo")
+        if not yay or not sudo:
+            self.set_notice("Preciso encontrar yay e sudo para continuar.", True)
             return
+
+        command = [yay, "-Syu", "--sudo", sudo, "--sudoflags=-A", "--sudoloop=false",
+                   "--noconfirm", "--editmenu=false", "--combinedupgrade=false", "--useask=false",
+                   "--color=never", "--noprogressbar"]
+        self.operation_active = True
+        self.awaiting_refresh = False
+        self.prompt_tail = ""
+        self.response_secret = False
+        self.response_entry.set_visibility(True)
+        self.pages.set_visible_child_name("operation")
+        self.page_title.set_label("Atualização em andamento")
+        self.page_subtitle.set_label("Acompanhe o processo aqui. A Central solicitará sua senha quando necessário.")
+        self.summary.set_title("Preparando a atualização…")
+        self.summary.set_subtitle("Mantenha o computador ligado até terminar")
+        self.set_notice()
+        self.operation_label.set_label("Preparando a atualização…")
+        self.operation_log.get_buffer().set_text("")
+        self.response_revealer.set_reveal_child(False)
+        self.respond_button.set_sensitive(True)
+        self.operation_spinner.start()
+        self.set_busy(True)
         try:
-            script = (
-                f"{shlex.quote(yay)} -Syu; result=$?; printf '\\n'; "
-                "if [ \"$result\" -eq 0 ]; then printf 'Atualização concluída.\\n'; "
-                "else printf 'O yay terminou com código %s.\\n' \"$result\"; fi; "
-                "read -r -p 'Pressione Enter para fechar esta janela… ' _"
+            self.session = UpdateSession(
+                command,
+                on_output=lambda text: GLib.idle_add(self._append_operation_output, text),
+                on_authentication=lambda request: GLib.idle_add(self._show_password_dialog, request),
+                on_exit=lambda code: GLib.idle_add(self._operation_finished, code),
             )
-            if terminal.endswith("kgx") or terminal.endswith("gnome-terminal"):
-                command = [terminal, "--", "/bin/bash", "-lc", script]
-            elif terminal.endswith("konsole"):
-                command = [terminal, "-e", "/bin/bash", "-lc", script]
-            else:
-                command = [terminal, "-e", "/bin/bash", "-lc", script]
-            subprocess.Popen(command, start_new_session=True, close_fds=True)
+            self.session.start()
         except Exception as exc:
-            self.set_notice(f"Não consegui abrir o Terminal: {exc}", True)
-            return
+            self.operation_active = False
+            self.operation_spinner.stop()
+            self.pages.set_visible_child_name("packages")
+            self.page_title.set_label("Revise antes de instalar")
+            self.page_subtitle.set_label("Confira os nomes e as versões que serão atualizadas.")
+            self.summary.set_title("Não foi possível iniciar")
+            self.summary.set_subtitle("Confira a mensagem e tente novamente")
+            self.set_busy(False)
+            self.set_notice(str(exc), True)
+
+    def _append_operation_output(self, text):
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)", "", text)
+        text = text.replace("\r", "\n")
+        if not text:
+            return GLib.SOURCE_REMOVE
+        buffer = self.operation_log.get_buffer()
+        buffer.insert(buffer.get_end_iter(), text)
+        if buffer.get_char_count() > 250000:
+            buffer.delete(buffer.get_start_iter(), buffer.get_iter_at_offset(buffer.get_char_count() - 200000))
+        self.operation_log.scroll_to_iter(buffer.get_end_iter(), 0.0, False, 0.0, 1.0)
+        self.prompt_tail = (self.prompt_tail + text)[-2000:]
+        if self.operation_active and re.search(r"(?:\[[^\]\n]{1,30}/[^\]\n]{1,30}\]|==>|[?:])\s*$", self.prompt_tail):
+            self.operation_label.set_label("O yay pode estar aguardando uma resposta")
+            prompt = self.prompt_tail.lower()
+            last_line = prompt.rstrip().split("\n")[-1]
+            self.response_secret = bool(re.search(r"password|passphrase|senha", last_line))
+            self.response_entry.set_visibility(not self.response_secret)
+            if self.response_secret:
+                self.response_hint.set_label("O programa pediu uma informação confidencial; o texto ficará oculto. A senha de administrador é pedida no diálogo da Central.")
+            elif "diffs to show" in prompt:
+                self.response_hint.set_label("O yay pergunta se deseja revisar alterações do AUR. Digite A para ver todas ou use Continuar para a opção padrão.")
+            elif "packages to cleanbuild" in prompt:
+                self.response_hint.set_label("O yay pergunta quais pacotes devem ser recompilados do zero. Use Continuar para a opção padrão ou digite a opção desejada.")
+            elif re.search(r"\[[^\]\n]{1,30}/[^\]\n]{1,30}\]\s*$", self.prompt_tail):
+                self.response_hint.set_label("O yay pede uma confirmação. Escolha Sim, Não ou Continuar para a opção padrão.")
+            else:
+                self.response_hint.set_label("Responda à pergunta acima. A senha será pedida em um diálogo da Central.")
+            self.response_revealer.set_reveal_child(True)
+        elif self.operation_active:
+            self.operation_label.set_label("Atualização em andamento…")
+        return GLib.SOURCE_REMOVE
+
+    def _show_response_controls(self, *_):
+        if self.operation_active:
+            self.response_revealer.set_reveal_child(True)
+            self.response_entry.grab_focus()
+
+    def _send_response(self, answer):
+        if self.operation_active and self.session and self.session.send_response(answer, secret=self.response_secret):
+            self.response_entry.set_text("")
+            self.response_entry.set_visibility(True)
+            self.response_secret = False
+            self.response_revealer.set_reveal_child(False)
+            self.prompt_tail = ""
+            self.operation_label.set_label("Resposta enviada. Aguarde…")
+
+    def _show_password_dialog(self, request):
+        if not self.operation_active:
+            request.respond(None)
+            return GLib.SOURCE_REMOVE
+        dialog = Adw.MessageDialog(transient_for=self.window, heading="Autenticação necessária",
+                                   body="Digite sua senha de administrador para continuar a atualização.")
+        dialog.set_modal(True)
+        password = Gtk.PasswordEntry(show_peek_icon=True, placeholder_text="Senha")
+        dialog.set_extra_child(password)
+        dialog.add_response("cancel", "Cancelar")
+        dialog.add_response("authenticate", "Continuar")
+        dialog.set_response_appearance("authenticate", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("authenticate")
+        dialog.set_close_response("cancel")
+        self.password_dialog = dialog
+        self.password_request = request
+
+        def respond(_dialog, response):
+            value = password.get_text() if response == "authenticate" else None
+            password.set_text("")
+            self.password_dialog = None
+            self.password_request = None
+            request.respond(value)
+            dialog.close()
+
+        dialog.connect("response", respond)
+        password.connect("activate", lambda *_: dialog.response("authenticate"))
+        dialog.present()
+        password.grab_focus()
+        return GLib.SOURCE_REMOVE
+
+    def _operation_finished(self, code):
+        if self.password_dialog:
+            self.password_dialog.response("cancel")
+        self.operation_active = False
+        self.session = None
+        self.operation_spinner.stop()
+        self.respond_button.set_sensitive(False)
+        self.response_revealer.set_reveal_child(False)
         self.awaiting_refresh = True
-        self.refresh_button.set_sensitive(False)
-        self.summary.set_title("Atualização aberta no Terminal")
-        self.summary.set_subtitle("Responda às perguntas por lá. Volte aqui quando terminar.")
-        self.set_notice("A senha será solicitada pelo yay no Terminal; o aplicativo não a recebe.")
+        self.set_busy(False)
+        self.apply_button.set_sensitive(True)
+        if code == 0:
+            self._request_indicator_refresh()
+        self.page_title.set_label("Processo finalizado" if code == 0 else "Atualização interrompida")
+        self.page_subtitle.set_label("Confira os detalhes abaixo e volte à lista quando quiser.")
+        if code == 0:
+            self.summary.set_title("O yay terminou")
+            self.summary.set_subtitle("Confira a lista para ver se há atualizações pendentes")
+            self.operation_label.set_label("Processo finalizado")
+            self.set_notice("Se o kernel ou componentes centrais foram atualizados, reinicie o computador.")
+        else:
+            self.summary.set_title("A atualização não foi concluída")
+            self.summary.set_subtitle(f"O yay terminou com código {code}. Consulte os detalhes abaixo.")
+            self.operation_label.set_label("Confira os detalhes da operação")
+            self.set_notice("Alguns pacotes podem já ter sido atualizados. Confira os detalhes antes de tentar novamente.", True)
         self.update_primary_button()
         return GLib.SOURCE_REMOVE
+
+    def _request_indicator_refresh(self):
+        cache_dir = os.path.join(GLib.get_user_cache_dir(), "arch-update-center")
+        temporary_path = None
+        try:
+            os.makedirs(cache_dir, mode=0o700, exist_ok=True)
+            fd, temporary_path = tempfile.mkstemp(prefix=".refresh-", dir=cache_dir)
+            with os.fdopen(fd, "w", encoding="utf-8") as marker:
+                marker.write("Atualização concluída\n")
+            os.replace(temporary_path, os.path.join(cache_dir, "refresh-request"))
+        except OSError as exc:
+            if temporary_path:
+                try:
+                    os.unlink(temporary_path)
+                except OSError:
+                    pass
+            print(f"Não foi possível solicitar atualização do indicador: {exc}", file=sys.stderr)
+
+    def _on_close_request(self, *_):
+        if not self.operation_active:
+            return False
+        dialog = Adw.MessageDialog(transient_for=self.window, heading="Atualização em andamento",
+                                   body="Aguarde a atualização terminar antes de fechar a Central.")
+        dialog.add_response("ok", "Entendi")
+        dialog.set_close_response("ok")
+        dialog.present()
+        return True
 
 
 if __name__ == "__main__":
