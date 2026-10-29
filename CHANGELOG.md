@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- Desativa explicitamente menus e perguntas do yay que continuavam ativos na configuração padrão do usuário.
+- Define respostas para menus de upgrade, limpeza, diffs e edição, e desativa a remoção interativa de dependências de compilação.
+
 ## 0.4.0
 
 - Executa `yay -Syu` dentro da Central, com o diálogo de senha na janela do aplicativo.

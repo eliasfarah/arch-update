@@ -383,8 +383,10 @@ class UpdateCenter(Adw.Application):
             return
 
         command = [yay, "-Syu", "--sudo", sudo, "--sudoflags=-A", "--sudoloop=false",
-                   "--noconfirm", "--editmenu=false", "--combinedupgrade=false", "--useask=false",
-                   "--color=never", "--noprogressbar"]
+                   "--noconfirm", "--answerupgrade", "None", "--answerclean", "None",
+                   "--answerdiff", "None", "--answeredit", "None", "--cleanmenu=false",
+                   "--diffmenu=false", "--editmenu=false", "--noremovemake",
+                   "--combinedupgrade=false", "--useask=false", "--color=never", "--noprogressbar"]
         self.operation_active = True
         self.awaiting_refresh = False
         self.prompt_tail = ""
