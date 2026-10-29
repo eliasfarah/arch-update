@@ -1,8 +1,10 @@
 # Changelog
 
-## Em desenvolvimento
+## 0.4.0
 
-- Executa o yay na Central, com diálogo de senha e respostas às perguntas na própria janela.
+- Executa `yay -Syu` dentro da Central, com o diálogo de senha na janela do aplicativo.
+- Inicia a atualização ao clicar no botão e usa `--noconfirm` para não pedir outras respostas.
+- Atualiza o contador da extensão logo após uma atualização bem-sucedida.
 - Corrige a extensão para os componentes de barra do GNOME Shell 51.
 
 ## 0.3.0

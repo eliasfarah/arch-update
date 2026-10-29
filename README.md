@@ -21,8 +21,9 @@ O instalador também ativa o indicador do GNOME. Ele consulta `yay -Qu` a cada 1
 - Os pacotes aparecem agrupados em Core, Extra, Multilib e AUR; repositórios personalizados ficam em Outros repositórios.
 - A lista pode estar desatualizada. Ao instalar, o `yay -Syu` sincroniza os repositórios e pode encontrar atualizações adicionais.
 - A senha é pedida em um diálogo da Central e enviada ao `sudo` por um canal local privado; ela não é gravada em arquivo nem exibida no registro.
-- Ao confirmar na Central, o yay usa `--noconfirm` para instalar tudo que encontrar após sincronizar, sem novas perguntas. A lista pode mudar desde a prévia mostrada.
-- Com `--noconfirm`, o yay não abre a revisão interativa de diferenças dos pacotes do AUR. Confira os pacotes mostrados na Central antes de confirmar.
+- Ao clicar em **Instalar atualizações**, o yay usa `--noconfirm` para instalar tudo que encontrar após sincronizar, sem novas perguntas. A lista pode mudar desde a prévia mostrada.
+- Com `--noconfirm`, o yay não abre a revisão interativa de diferenças dos pacotes do AUR. Confira os pacotes mostrados na Central antes de iniciar.
+- Depois de uma atualização bem-sucedida, o contador da extensão é atualizado imediatamente.
 - Ao terminar, clique em **Conferir atualizações** para atualizar a lista.
 
 Como a atualização é completa, mantenha o computador ligado até o processo terminar.
