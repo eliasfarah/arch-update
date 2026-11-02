@@ -39,6 +39,8 @@ class UpdateCenter(Adw.Application):
     def on_activate(self, _app):
         if hasattr(self, "window"):
             self.window.present()
+            if not self.busy:
+                self.refresh()
             return
         self.window = Adw.ApplicationWindow(application=self, title="Atualizações do sistema")
         self.window.set_default_size(840, 720)

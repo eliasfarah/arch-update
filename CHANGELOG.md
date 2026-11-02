@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+
+- Atualiza a lista de pacotes ao reabrir uma Central que já estava aberta.
+
 ## 0.4.1
 
 - Desativa explicitamente menus e perguntas do yay que continuavam ativos na configuração padrão do usuário.

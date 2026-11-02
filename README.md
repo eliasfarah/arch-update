@@ -15,6 +15,8 @@ Clone ou extraia o projeto e execute:
 Depois, procure **Central de atualizações do Arch** no menu de aplicativos.
 O instalador também ativa o indicador do GNOME. Ele consulta `yay -Qu` a cada 15 minutos, mostra uma notificação quando a lista de atualizações muda e abre a Central ao clicar no ícone da barra superior. Se o GNOME já estiver aberto e não reconhecer a extensão recém-instalada, ela fica marcada para ativação na próxima sessão.
 
+Ao abrir a Central novamente pelo indicador, a lista é consultada outra vez.
+
 ## Uso
 
 - A lista usa `yay -Qu` e inclui atualizações dos repositórios e do AUR. A consulta não instala pacotes.
