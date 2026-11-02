@@ -14,11 +14,30 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 from update_backend import UpdateSession
 
 
 APP_ID = "io.github.farah.archupdatecenter"
+APP_STYLES = b"""
+label.category-dot { font-size: 11px; }
+label.category-core, .package-accent.category-core { color: #62a0ea; background-color: #62a0ea; }
+label.category-extra, .package-accent.category-extra { color: #c061cb; background-color: #c061cb; }
+label.category-multilib, .package-accent.category-multilib { color: #33b7a5; background-color: #33b7a5; }
+label.category-aur, .package-accent.category-aur { color: #e5a50a; background-color: #e5a50a; }
+label.category-other, .package-accent.category-other { color: #8a8a8a; background-color: #8a8a8a; }
+label.category-count, label.source-chip {
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-weight: 600;
+}
+label.category-count.category-core, label.source-chip.category-core { background-color: alpha(#62a0ea, 0.14); }
+label.category-count.category-extra, label.source-chip.category-extra { background-color: alpha(#c061cb, 0.14); }
+label.category-count.category-multilib, label.source-chip.category-multilib { background-color: alpha(#33b7a5, 0.14); }
+label.category-count.category-aur, label.source-chip.category-aur { background-color: alpha(#e5a50a, 0.16); }
+label.category-count.category-other, label.source-chip.category-other { background-color: alpha(#8a8a8a, 0.14); }
+.package-accent { border-radius: 3px; }
+"""
 
 
 class UpdateCenter(Adw.Application):
@@ -41,12 +60,25 @@ class UpdateCenter(Adw.Application):
                 self.refresh()
             return
         self.window = Adw.ApplicationWindow(application=self, title="Atualizações do sistema")
+        self._install_styles()
         self.window.set_default_size(840, 720)
         self.window.set_size_request(580, 520)
         self.window.connect("close-request", self._on_close_request)
         self.build_ui()
         self.window.present()
         self.refresh()
+
+    def _install_styles(self):
+        display = Gdk.Display.get_default()
+        if display is None:
+            return
+        self.style_provider = Gtk.CssProvider()
+        self.style_provider.load_from_data(APP_STYLES)
+        Gtk.StyleContext.add_provider_for_display(
+            display,
+            self.style_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
 
     def build_ui(self):
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -201,6 +233,16 @@ class UpdateCenter(Adw.Application):
         self.package_placeholder.set_text(
             "Nenhum pacote corresponde à busca" if query else "Nenhuma atualização disponível"
         )
+        if query:
+            visible_count = sum(
+                query.casefold() in row.package_name.casefold()
+                or query.casefold() in row.package_source
+                for row in self.package_rows
+            )
+            self.count.set_label(f"{visible_count} de {len(self.package_rows)}")
+        elif self.packages:
+            total = len(self.package_rows)
+            self.count.set_label(f"{total} pacote" if total == 1 else f"{total} pacotes")
         self.package_list.invalidate_filter()
 
     def set_notice(self, text="", warning=False):
@@ -291,6 +333,9 @@ class UpdateCenter(Adw.Application):
             "aur": "AUR",
             "other": "Outros repositórios",
         }
+        group_counts = {}
+        for _name, _old, _new, group, _source in entries:
+            group_counts[group] = group_counts.get(group, 0) + 1
         for name, old, new, group, source in entries:
             if group != current_group:
                 heading = Gtk.ListBoxRow()
@@ -298,14 +343,23 @@ class UpdateCenter(Adw.Application):
                 heading.set_activatable(False)
                 heading.is_group_heading = True
                 heading.package_group = group
-                heading_label = Gtk.Label(label=group_titles[group], xalign=0)
+                heading_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
+                heading_box.set_margin_top(13)
+                heading_box.set_margin_bottom(6)
+                heading_box.set_margin_start(16)
+                heading_box.set_margin_end(16)
+                category_dot = Gtk.Label(label="●")
+                category_dot.add_css_class("category-dot")
+                category_dot.add_css_class(f"category-{group}")
+                heading_label = Gtk.Label(label=group_titles[group], xalign=0, hexpand=True)
                 heading_label.add_css_class("heading")
-                heading_label.add_css_class("dim-label")
-                heading_label.set_margin_top(12)
-                heading_label.set_margin_bottom(4)
-                heading_label.set_margin_start(16)
-                heading_label.set_margin_end(16)
-                heading.set_child(heading_label)
+                heading_count = Gtk.Label(label=str(group_counts[group]))
+                heading_count.add_css_class("category-count")
+                heading_count.add_css_class(f"category-{group}")
+                heading_box.append(category_dot)
+                heading_box.append(heading_label)
+                heading_box.append(heading_count)
+                heading.set_child(heading_box)
                 self.package_list.append(heading)
                 current_group = group
             row = Adw.ActionRow(title=name, subtitle=f"Versão atual  {old}    →    Nova versão  {new}")
@@ -315,8 +369,15 @@ class UpdateCenter(Adw.Application):
             row.set_activatable(False)
             source_label = Gtk.Label(label=source)
             source_label.add_css_class("dim-label")
-            source_label.add_css_class("caption")
+            source_label.add_css_class("source-chip")
+            source_label.add_css_class(f"category-{group}")
             row.add_suffix(source_label)
+            accent = Gtk.Box()
+            accent.set_size_request(4, 30)
+            accent.set_valign(Gtk.Align.CENTER)
+            accent.add_css_class("package-accent")
+            accent.add_css_class(f"category-{group}")
+            row.add_prefix(accent)
             row.set_selectable(False)
             row.package_name = name
             row.package_source = source.casefold()

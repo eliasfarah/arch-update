@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.4
+
+- Refina a lista com marcadores coloridos por categoria e contagem em cada grupo.
+- Mostra quantos pacotes correspondem à busca em relação ao total.
+
 ## 0.4.3
 
 - Remove os controles manuais para responder perguntas durante a atualização.
