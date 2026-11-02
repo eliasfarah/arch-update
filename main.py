@@ -33,8 +33,6 @@ class UpdateCenter(Adw.Application):
         self.session = None
         self.password_dialog = None
         self.password_request = None
-        self.prompt_tail = ""
-        self.response_secret = False
 
     def on_activate(self, _app):
         if hasattr(self, "window"):
@@ -128,9 +126,6 @@ class UpdateCenter(Adw.Application):
         self.operation_label = Gtk.Label(label="Preparando a atualização…", xalign=0, hexpand=True)
         self.operation_label.add_css_class("heading")
         operation_header.append(self.operation_label)
-        self.respond_button = Gtk.Button(label="Responder pergunta")
-        self.respond_button.connect("clicked", self._show_response_controls)
-        operation_header.append(self.respond_button)
         self.operation_page.append(operation_header)
 
         self.operation_log = Gtk.TextView(editable=False, cursor_visible=False,
@@ -141,29 +136,6 @@ class UpdateCenter(Adw.Application):
         log_scroller.add_css_class("card")
         log_scroller.set_child(self.operation_log)
         self.operation_page.append(log_scroller)
-
-        self.response_revealer = Gtk.Revealer(reveal_child=False)
-        response_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        self.response_hint = Gtk.Label(label="Responda à pergunta acima. A senha será pedida em um diálogo da Central.", xalign=0)
-        self.response_hint.set_wrap(True)
-        self.response_hint.add_css_class("dim-label")
-        response_box.append(self.response_hint)
-        response_buttons = Gtk.Box(spacing=8)
-        for label, value in (("Sim", "y"), ("Não", "n"), ("Continuar", "")):
-            button = Gtk.Button(label=label)
-            button.connect("clicked", lambda _button, answer=value: self._send_response(answer))
-            response_buttons.append(button)
-        response_box.append(response_buttons)
-        response_entry_row = Gtk.Box(spacing=8)
-        self.response_entry = Gtk.Entry(placeholder_text="Outra resposta", hexpand=True)
-        self.response_entry.connect("activate", lambda *_: self._send_response(self.response_entry.get_text()))
-        response_entry_row.append(self.response_entry)
-        send_button = Gtk.Button(label="Enviar")
-        send_button.connect("clicked", lambda *_: self._send_response(self.response_entry.get_text()))
-        response_entry_row.append(send_button)
-        response_box.append(response_entry_row)
-        self.response_revealer.set_child(response_box)
-        self.operation_page.append(self.response_revealer)
 
         bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
         bottom.set_margin_top(12)
@@ -391,9 +363,6 @@ class UpdateCenter(Adw.Application):
                    "--combinedupgrade=false", "--useask=false", "--color=never", "--noprogressbar"]
         self.operation_active = True
         self.awaiting_refresh = False
-        self.prompt_tail = ""
-        self.response_secret = False
-        self.response_entry.set_visibility(True)
         self.pages.set_visible_child_name("operation")
         self.page_title.set_label("Atualização em andamento")
         self.page_subtitle.set_label("Acompanhe o processo aqui. A Central solicitará sua senha quando necessário.")
@@ -402,8 +371,6 @@ class UpdateCenter(Adw.Application):
         self.set_notice()
         self.operation_label.set_label("Preparando a atualização…")
         self.operation_log.get_buffer().set_text("")
-        self.response_revealer.set_reveal_child(False)
-        self.respond_button.set_sensitive(True)
         self.operation_spinner.start()
         self.set_busy(True)
         try:
@@ -435,41 +402,9 @@ class UpdateCenter(Adw.Application):
         if buffer.get_char_count() > 250000:
             buffer.delete(buffer.get_start_iter(), buffer.get_iter_at_offset(buffer.get_char_count() - 200000))
         self.operation_log.scroll_to_iter(buffer.get_end_iter(), 0.0, False, 0.0, 1.0)
-        self.prompt_tail = (self.prompt_tail + text)[-2000:]
-        if self.operation_active and re.search(r"(?:\[[^\]\n]{1,30}/[^\]\n]{1,30}\]|==>|[?:])\s*$", self.prompt_tail):
-            self.operation_label.set_label("O yay pode estar aguardando uma resposta")
-            prompt = self.prompt_tail.lower()
-            last_line = prompt.rstrip().split("\n")[-1]
-            self.response_secret = bool(re.search(r"password|passphrase|senha", last_line))
-            self.response_entry.set_visibility(not self.response_secret)
-            if self.response_secret:
-                self.response_hint.set_label("O programa pediu uma informação confidencial; o texto ficará oculto. A senha de administrador é pedida no diálogo da Central.")
-            elif "diffs to show" in prompt:
-                self.response_hint.set_label("O yay pergunta se deseja revisar alterações do AUR. Digite A para ver todas ou use Continuar para a opção padrão.")
-            elif "packages to cleanbuild" in prompt:
-                self.response_hint.set_label("O yay pergunta quais pacotes devem ser recompilados do zero. Use Continuar para a opção padrão ou digite a opção desejada.")
-            elif re.search(r"\[[^\]\n]{1,30}/[^\]\n]{1,30}\]\s*$", self.prompt_tail):
-                self.response_hint.set_label("O yay pede uma confirmação. Escolha Sim, Não ou Continuar para a opção padrão.")
-            else:
-                self.response_hint.set_label("Responda à pergunta acima. A senha será pedida em um diálogo da Central.")
-            self.response_revealer.set_reveal_child(True)
-        elif self.operation_active:
+        if self.operation_active:
             self.operation_label.set_label("Atualização em andamento…")
         return GLib.SOURCE_REMOVE
-
-    def _show_response_controls(self, *_):
-        if self.operation_active:
-            self.response_revealer.set_reveal_child(True)
-            self.response_entry.grab_focus()
-
-    def _send_response(self, answer):
-        if self.operation_active and self.session and self.session.send_response(answer, secret=self.response_secret):
-            self.response_entry.set_text("")
-            self.response_entry.set_visibility(True)
-            self.response_secret = False
-            self.response_revealer.set_reveal_child(False)
-            self.prompt_tail = ""
-            self.operation_label.set_label("Resposta enviada. Aguarde…")
 
     def _show_password_dialog(self, request):
         if not self.operation_active:
@@ -508,8 +443,6 @@ class UpdateCenter(Adw.Application):
         self.operation_active = False
         self.session = None
         self.operation_spinner.stop()
-        self.respond_button.set_sensitive(False)
-        self.response_revealer.set_reveal_child(False)
         self.awaiting_refresh = True
         self.set_busy(False)
         self.apply_button.set_sensitive(True)

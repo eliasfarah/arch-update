@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.3
+
+- Remove os controles manuais para responder perguntas durante a atualização.
+- Mantém `--noconfirm` e respostas automáticas para os menus de atualização do yay.
+
 ## 0.4.2
 
 - Atualiza a lista de pacotes ao reabrir uma Central que já estava aberta.
