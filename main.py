@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """A small GTK 4 front end for complete Arch Linux system upgrades."""
 
+import json
 import os
 import re
 import shutil
@@ -265,7 +266,7 @@ class UpdateCenter(Adw.Application):
         self.set_busy(True)
         self.set_notice()
         self.summary.set_title("Procurando atualizações…")
-        self.summary.set_subtitle("Consultando a lista de pacotes salva no computador")
+        self.summary.set_subtitle("Atualizando a prévia com bases temporárias dos repositórios")
         self.count.set_label("")
         self.search.set_text("")
         self.search.set_visible(False)
@@ -273,49 +274,24 @@ class UpdateCenter(Adw.Application):
         threading.Thread(target=self._check_worker, daemon=True).start()
 
     def _check_worker(self):
-        yay = shutil.which("yay")
-        if not yay:
-            GLib.idle_add(self._show_updates, [], "Yay não está instalado neste computador.", 1)
+        checker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "update_checker.py")
+        if not os.path.isfile(checker):
+            GLib.idle_add(self._show_updates, [], "O componente de consulta está ausente. Reinstale o aplicativo.", 1)
             return
         try:
-            p = subprocess.run([yay, "-Qu"], capture_output=True, text=True, timeout=300)
-            lines = (p.stdout or "").splitlines()
-            entries = []
-            pacman = shutil.which("pacman") or "pacman"
-            foreign = subprocess.run([pacman, "-Qm"], capture_output=True, text=True, timeout=60)
-            foreign_names = {line.split()[0] for line in foreign.stdout.splitlines() if line.split()}
-            sync = subprocess.run([pacman, "-Sl"], capture_output=True, text=True, timeout=90)
-            known_repositories = {"core": 0, "extra": 1, "multilib": 2}
-            repository_by_package = {}
-            for line in sync.stdout.splitlines():
-                parts = line.split()
-                if len(parts) >= 3:
-                    repository, package_name = parts[0], parts[1]
-                    if repository in known_repositories:
-                        previous = repository_by_package.get(package_name)
-                        previous_rank = known_repositories.get(previous, 99)
-                        if previous is None or known_repositories[repository] < previous_rank:
-                            repository_by_package[package_name] = repository
-                    elif package_name not in repository_by_package:
-                        repository_by_package[package_name] = repository
-            for line in lines:
-                m = re.match(r"^(\S+)\s+(\S+)\s+->\s+(\S+)(?:\s+\[[^\]]+\])?$", line.strip())
-                if m:
-                    name, old, new = m.groups()
-                    repository = repository_by_package.get(name)
-                    if name in foreign_names or repository is None:
-                        group, source = "aur", "AUR"
-                    elif repository in known_repositories:
-                        group, source = repository, repository.capitalize()
-                    else:
-                        group, source = "other", repository
-                    entries.append((name, old, new, group, source))
-            group_order = {"core": 0, "extra": 1, "multilib": 2, "aur": 3, "other": 4}
-            entries.sort(key=lambda item: (group_order[item[3]], item[0].casefold()))
-            err = (p.stderr or "").strip()
-            if not entries and p.stdout.strip():
-                err = p.stdout.strip()
-            GLib.idle_add(self._show_updates, entries, err, p.returncode)
+            result = subprocess.run(
+                [sys.executable, checker, "--force"],
+                capture_output=True,
+                text=True,
+                timeout=360,
+            )
+            data = json.loads(result.stdout)
+            entries = [
+                (item["name"], item["oldVersion"], item["newVersion"], item["group"], item["source"])
+                for item in data.get("updates", [])
+            ]
+            error = data.get("error", "")
+            GLib.idle_add(self._show_updates, entries, error, result.returncode)
         except Exception as exc:
             GLib.idle_add(self._show_updates, [], str(exc), 1)
 
@@ -388,11 +364,11 @@ class UpdateCenter(Adw.Application):
         self.search.set_visible(bool(entries))
         if entries:
             self.summary.set_title(f"{len(entries)} atualizações disponíveis")
-            self.summary.set_subtitle(f"Lista salva · consultada às {datetime.now().strftime('%H:%M')}")
+            self.summary.set_subtitle(f"Bases sincronizadas · consultada às {datetime.now().strftime('%H:%M')}")
             self.set_notice("Ao clicar em Instalar, yay sincroniza e instala tudo que encontrar, sem outra confirmação. A lista pode mudar desde esta prévia.")
         elif not err and code in (0, 1, 2):
-            self.summary.set_title("Nenhuma atualização na lista salva")
-            self.summary.set_subtitle("A lista será sincronizada novamente antes de instalar")
+            self.summary.set_title("Nenhuma atualização disponível")
+            self.summary.set_subtitle(f"Bases sincronizadas · consultada às {datetime.now().strftime('%H:%M')}")
             self.set_notice("Clique em Verificar e atualizar para sincronizar e instalar automaticamente qualquer atualização encontrada.")
         else:
             self.summary.set_title("Não foi possível procurar atualizações")
@@ -417,7 +393,7 @@ class UpdateCenter(Adw.Application):
             self.set_notice("Preciso encontrar yay e sudo para continuar.", True)
             return
 
-        command = [yay, "-Syu", "--sudo", sudo, "--sudoflags=-A", "--sudoloop=false",
+        command = [yay, "-Syyu", "--sudo", sudo, "--sudoflags=-A", "--sudoloop=false",
                    "--noconfirm", "--answerupgrade", "None", "--answerclean", "None",
                    "--answerdiff", "None", "--answeredit", "None", "--cleanmenu=false",
                    "--diffmenu=false", "--editmenu=false", "--noremovemake",

@@ -15,6 +15,7 @@ install -Dm755 "$project_dir/arch-update-center" "$bin_dir/arch-update-center"
 install -d -m700 "$cache_dir"
 install -Dm644 "$project_dir/main.py" "$app_dir/main.py"
 install -Dm644 "$project_dir/update_backend.py" "$app_dir/update_backend.py"
+install -Dm644 "$project_dir/update_checker.py" "$app_dir/update_checker.py"
 install -Dm755 "$project_dir/askpass.py" "$app_dir/askpass.py"
 install -Dm644 "$project_dir/pty_runner.py" "$app_dir/pty_runner.py"
 install -Dm644 "$project_dir/data/icons/hicolor/scalable/apps/$icon_name.svg" \

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.5
+
+- Sincroniza bases temporárias para mostrar a prévia atual dos repositórios sem alterar a base real do pacman.
+- Consulta o AUR separadamente e usa o mesmo verificador no indicador GNOME.
+- Executa `yay -Syyu` ao instalar para forçar nova sincronização.
+
 ## 0.4.4
 
 - Refina a lista com marcadores coloridos por categoria e contagem em cada grupo.

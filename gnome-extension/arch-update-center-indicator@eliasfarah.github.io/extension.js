@@ -10,8 +10,6 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 const CHECK_INTERVAL_SECONDS = 15 * 60;
 const INITIAL_DELAY_SECONDS = 12;
-const UPDATE_LINE = /^(\S+)\s+(\S+)\s+->\s+(\S+)(?:\s+\[[^\]]+\])?$/;
-
 export default class ArchUpdateCenterIndicator extends Extension {
     enable() {
         this._disabled = false;
@@ -109,21 +107,28 @@ export default class ArchUpdateCenterIndicator extends Extension {
         if (this._disabled || this._checking)
             return;
 
-        const yay = GLib.find_program_in_path('yay');
-        if (!yay) {
+        const python = GLib.find_program_in_path('python3');
+        const checker = GLib.build_filenamev([
+            GLib.get_home_dir(),
+            '.local',
+            'lib',
+            'arch-update-center',
+            'update_checker.py',
+        ]);
+        if (!python || !GLib.file_test(checker, GLib.FileTest.IS_REGULAR)) {
             this._countLabel.set_text('!');
-            this._button?.set_accessible_name('yay não está instalado. Clique para abrir a Central.');
+            this._button?.set_accessible_name('O verificador não está instalado. Reinstale a Central.');
             return;
         }
 
         this._checking = true;
         if (this._previousSignature === null) {
             this._countLabel.set_text('…');
-            this._button.set_accessible_name('Consultando atualizações com yay');
+            this._button.set_accessible_name('Sincronizando e consultando atualizações');
         }
         try {
             const proc = Gio.Subprocess.new(
-                [yay, '-Qu'],
+                [python, checker],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
             );
             proc.communicate_utf8_async(null, null, (source, result) => {
@@ -133,33 +138,30 @@ export default class ArchUpdateCenterIndicator extends Extension {
 
                 try {
                     const [, stdout, stderr] = source.communicate_utf8_finish(result);
-                    this._handleResults(stdout ?? '', stderr ?? '');
+                    const response = JSON.parse(stdout ?? '{}');
+                    if (response.error)
+                        throw new Error(response.error);
+                    if (!Array.isArray(response.updates))
+                        throw new Error('Resposta inválida do verificador de atualizações.');
+                    this._handleResults(response.updates, stderr ?? '');
                 } catch (error) {
                     this._countLabel.set_text('!');
                     this._button?.set_accessible_name('Não foi possível consultar as atualizações.');
-                    console.error(`[${this.uuid}] Falha em yay -Qu: ${error.message}`);
+                    console.error(`[${this.uuid}] Falha ao consultar atualizações: ${error.message}`);
                 }
             });
         } catch (error) {
             this._checking = false;
             this._countLabel.set_text('!');
-            this._button?.set_accessible_name('Não foi possível iniciar yay.');
-            console.error(`[${this.uuid}] Não foi possível iniciar yay: ${error.message}`);
+            this._button?.set_accessible_name('Não foi possível iniciar o verificador.');
+            console.error(`[${this.uuid}] Não foi possível iniciar o verificador: ${error.message}`);
         }
     }
 
-    _handleResults(stdout, stderr) {
-        const lines = stdout.split(/\r?\n/).filter(Boolean);
-        const updates = [];
-        for (const line of lines) {
-            const match = UPDATE_LINE.exec(line.trim());
-            if (match)
-                updates.push({name: match[1], oldVersion: match[2], newVersion: match[3]});
-        }
-
-        if (stderr.trim() || (lines.length > 0 && updates.length === 0)) {
+    _handleResults(updates, stderr) {
+        if (stderr.trim()) {
             this._countLabel.set_text('!');
-            this._button?.set_accessible_name('Falha ao consultar yay. Clique para abrir a Central.');
+            this._button?.set_accessible_name('Falha ao consultar atualizações. Clique para abrir a Central.');
             return;
         }
 
