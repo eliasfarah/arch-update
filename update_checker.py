@@ -88,7 +88,12 @@ def check_updates(force=False):
         if stale_lock.exists():
             stale_lock.unlink()
         sync_flag = "-Syy" if force else "-Sy"
-        sync_command = [pacman, sync_flag, "--dbpath", str(database_path), "--logfile", "/dev/null", "--noconfirm"]
+        # Pacman 7's downloader sandbox cannot switch to its alpm sandbox user
+        # when pacman runs under fakeroot (the unprivileged checkupdates path).
+        # Disable only that downloader sandbox; syncing still writes solely to
+        # our private temporary database and the real local DB remains read-only.
+        sync_command = [pacman, sync_flag, "--disable-sandbox", "--dbpath", str(database_path),
+                        "--logfile", "/dev/null", "--noconfirm"]
         if os.geteuid() != 0:
             sync_command = [fakeroot, *sync_command]
         synced = run(sync_command, env)

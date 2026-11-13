@@ -23,6 +23,7 @@ Ao abrir a Central novamente pelo indicador, a lista é consultada outra vez.
 - Os pacotes aparecem agrupados em Core, Extra, Multilib e AUR; repositórios personalizados ficam em Outros repositórios.
 - Ao instalar, o `yay -Syyu` força outra sincronização e pode encontrar atualizações que chegaram depois da prévia.
 - A senha é pedida em um diálogo da Central e enviada ao `sudo` por um canal local privado; ela não é gravada em arquivo nem exibida no registro.
+- Durante a instalação, a Central mostra o andamento por pacote e marca os concluídos; a saída detalhada do terminal fica recolhida em **Ver terminal**.
 - Ao clicar em **Instalar atualizações**, o yay usa `--noconfirm` e desativa menus de limpeza, diffs e edição, mesmo que estejam ligados na configuração do usuário. Instala tudo que encontrar após sincronizar; a lista pode mudar desde a prévia.
 - Com `--noconfirm`, o yay não abre a revisão interativa de diferenças dos pacotes do AUR. Confira os pacotes mostrados na Central antes de iniciar.
 - Depois de uma atualização bem-sucedida, o contador da extensão é atualizado imediatamente.

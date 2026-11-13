@@ -38,7 +38,26 @@ label.category-count.category-multilib, label.source-chip.category-multilib { ba
 label.category-count.category-aur, label.source-chip.category-aur { background-color: alpha(#e5a50a, 0.16); }
 label.category-count.category-other, label.source-chip.category-other { background-color: alpha(#8a8a8a, 0.14); }
 .package-accent { border-radius: 3px; }
+label.package-status-done { color: #2ec27e; font-weight: 600; }
+image.package-status-done { color: #2ec27e; }
+label.package-status-failed { color: #e01b24; font-weight: 600; }
+label.package-status-pending { color: alpha(currentColor, 0.62); }
+label.package-status-skipped { color: alpha(currentColor, 0.62); }
 """
+
+PACMAN_ACTION = re.compile(
+    r"\(\s*(\d+)\s*/\s*(\d+)\)\s+"
+    r"(upgrading|installing|reinstalling|downgrading|removing)\s+"
+    r"([^\s]+?)(?:\.{3,})?\s*$",
+    re.IGNORECASE,
+)
+PACMAN_ACTION_LABELS = {
+    "upgrading": "Atualizando",
+    "installing": "Instalando",
+    "reinstalling": "Reinstalando",
+    "downgrading": "Revertendo",
+    "removing": "Removendo",
+}
 
 
 class UpdateCenter(Adw.Application):
@@ -53,6 +72,10 @@ class UpdateCenter(Adw.Application):
         self.session = None
         self.password_dialog = None
         self.password_request = None
+        self.operation_package_rows = {}
+        self.operation_parse_buffer = ""
+        self.operation_current_package = None
+        self.operation_current_action = "installing"
 
     def on_activate(self, _app):
         if hasattr(self, "window"):
@@ -161,14 +184,43 @@ class UpdateCenter(Adw.Application):
         operation_header.append(self.operation_label)
         self.operation_page.append(operation_header)
 
+        self.operation_progress_label = Gtk.Label(label="Preparando a lista de pacotes…", xalign=0)
+        self.operation_progress_label.add_css_class("dim-label")
+        self.operation_page.append(self.operation_progress_label)
+        self.operation_progress = Gtk.ProgressBar(show_text=False)
+        self.operation_page.append(self.operation_progress)
+
+        self.operation_package_placeholder = Gtk.Label(
+            label="A lista aparecerá quando o yay iniciar a instalação.",
+            margin_top=18, margin_bottom=18,
+        )
+        self.operation_package_placeholder.add_css_class("dim-label")
+        self.operation_package_list = Gtk.ListBox()
+        self.operation_package_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.operation_package_list.set_placeholder(self.operation_package_placeholder)
+        self.operation_package_scroller = Gtk.ScrolledWindow(vexpand=True, min_content_height=150,
+                                                              hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.operation_package_scroller.add_css_class("boxed-list")
+        self.operation_package_scroller.set_child(self.operation_package_list)
+        self.operation_page.append(self.operation_package_scroller)
+
+        self.operation_log_toggle = Gtk.ToggleButton(label="Ver terminal", icon_name="utilities-terminal-symbolic")
+        self.operation_log_toggle.add_css_class("flat")
+        self.operation_log_toggle.set_halign(Gtk.Align.START)
+        self.operation_page.append(self.operation_log_toggle)
+
         self.operation_log = Gtk.TextView(editable=False, cursor_visible=False,
                                          wrap_mode=Gtk.WrapMode.WORD_CHAR, monospace=True,
                                          top_margin=12, bottom_margin=12, left_margin=12, right_margin=12)
-        log_scroller = Gtk.ScrolledWindow(vexpand=True, min_content_height=160,
+        log_scroller = Gtk.ScrolledWindow(vexpand=False, min_content_height=115, max_content_height=190,
                                           hscrollbar_policy=Gtk.PolicyType.NEVER)
         log_scroller.add_css_class("card")
         log_scroller.set_child(self.operation_log)
-        self.operation_page.append(log_scroller)
+        self.operation_log_revealer = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self.operation_log_revealer.set_reveal_child(False)
+        self.operation_log_revealer.set_child(log_scroller)
+        self.operation_page.append(self.operation_log_revealer)
+        self.operation_log_toggle.connect("toggled", self._toggle_operation_log)
 
         bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
         bottom.set_margin_top(12)
@@ -384,6 +436,126 @@ class UpdateCenter(Adw.Application):
         else:
             self._begin_update()
 
+    def _toggle_operation_log(self, button):
+        visible = button.get_active()
+        self.operation_log_revealer.set_reveal_child(visible)
+        button.set_label("Ocultar terminal" if visible else "Ver terminal")
+
+    def _clear_operation_packages(self):
+        child = self.operation_package_list.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            self.operation_package_list.remove(child)
+            child = nxt
+        self.operation_package_rows.clear()
+        self.operation_current_package = None
+        self.operation_current_action = "installing"
+        self.operation_parse_buffer = ""
+
+    def _add_operation_package(self, name, old="", new="", group="other", source=""):
+        if name in self.operation_package_rows:
+            return self.operation_package_rows[name]
+        row = Adw.ActionRow(title=name)
+        row.set_title_lines(1)
+        if old or new:
+            row.set_subtitle(f"{old}  →  {new}")
+        elif source:
+            row.set_subtitle(source)
+        row.set_activatable(False)
+        row.set_selectable(False)
+        if group in {"core", "extra", "multilib", "aur", "other"}:
+            accent = Gtk.Box()
+            accent.set_size_request(4, 28)
+            accent.set_valign(Gtk.Align.CENTER)
+            accent.add_css_class("package-accent")
+            accent.add_css_class(f"category-{group}")
+            row.add_prefix(accent)
+        status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        status_box.set_valign(Gtk.Align.CENTER)
+        spinner = Gtk.Spinner()
+        spinner.set_size_request(16, 16)
+        spinner.set_visible(False)
+        status_box.append(spinner)
+        status = Gtk.Label(label="Na fila", css_classes=["caption", "package-status-pending"])
+        status_box.append(status)
+        check = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
+        check.add_css_class("package-status-done")
+        check.set_visible(False)
+        status_box.append(check)
+        row.add_suffix(status_box)
+        self.operation_package_list.append(row)
+        self.operation_package_rows[name] = {
+            "row": row, "spinner": spinner, "status": status, "check": check,
+        }
+        return self.operation_package_rows[name]
+
+    def _set_operation_package_status(self, name, state, action="installing"):
+        widgets = self.operation_package_rows.get(name)
+        if not widgets:
+            widgets = self._add_operation_package(name)
+        spinner = widgets["spinner"]
+        status = widgets["status"]
+        check = widgets["check"]
+        spinner.stop()
+        spinner.set_visible(state == "running")
+        if state == "running":
+            spinner.start()
+            status.set_label(PACMAN_ACTION_LABELS.get(action, "Processando"))
+            status.set_css_classes(["caption"])
+            check.set_visible(False)
+        elif state == "done":
+            status.set_label("Concluído")
+            status.set_css_classes(["caption"])
+            check.set_visible(True)
+        elif state == "failed":
+            status.set_label("Falhou")
+            status.set_css_classes(["caption", "package-status-failed"])
+            check.set_visible(False)
+        elif state == "skipped":
+            status.set_label("Não foi necessário")
+            status.set_css_classes(["caption", "package-status-skipped"])
+            check.set_visible(False)
+        else:
+            status.set_label("Na fila")
+            status.set_css_classes(["caption", "package-status-pending"])
+            check.set_visible(False)
+        self._update_operation_progress()
+
+    def _update_operation_progress(self):
+        total = len(self.operation_package_rows)
+        completed = sum(
+            1 for item in self.operation_package_rows.values()
+            if item["check"].get_visible()
+        )
+        running = self.operation_current_package
+        if total:
+            action_label = PACMAN_ACTION_LABELS.get(self.operation_current_action, "Processando")
+            self.operation_progress_label.set_label(
+                f"{completed} de {total} concluídos"
+                + (f" · {action_label} {running}" if running else "")
+            )
+            self.operation_progress.set_fraction(min(completed / total, 1.0))
+            self.operation_progress.set_text(f"{completed} de {total}")
+        else:
+            self.operation_progress_label.set_label("Aguardando os pacotes do yay…")
+            self.operation_progress.set_fraction(0)
+            self.operation_progress.set_text("")
+
+    def _track_operation_output(self, text):
+        self.operation_parse_buffer += text.replace("\r", "\n")
+        lines = self.operation_parse_buffer.split("\n")
+        self.operation_parse_buffer = lines.pop()
+        for line in lines:
+            match = PACMAN_ACTION.search(line)
+            if not match:
+                continue
+            _index, _total, action, name = match.groups()
+            if self.operation_current_package and self.operation_current_package != name:
+                self._set_operation_package_status(self.operation_current_package, "done")
+            self.operation_current_package = name
+            self.operation_current_action = action.casefold()
+            self._set_operation_package_status(name, "running", self.operation_current_action)
+
     def _begin_update(self):
         if self.busy or not self.query_ok:
             return
@@ -408,6 +580,13 @@ class UpdateCenter(Adw.Application):
         self.set_notice()
         self.operation_label.set_label("Preparando a atualização…")
         self.operation_log.get_buffer().set_text("")
+        self.operation_log_toggle.set_active(False)
+        self.operation_log_revealer.set_reveal_child(False)
+        self.operation_log_toggle.set_label("Ver terminal")
+        self._clear_operation_packages()
+        for name, old, new, group, source in self.packages:
+            self._add_operation_package(name, old, new, group, source)
+        self._update_operation_progress()
         self.operation_spinner.start()
         self.set_busy(True)
         try:
@@ -431,6 +610,7 @@ class UpdateCenter(Adw.Application):
 
     def _append_operation_output(self, text):
         text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)", "", text)
+        self._track_operation_output(text)
         text = text.replace("\r", "\n")
         if not text:
             return GLib.SOURCE_REMOVE
@@ -475,6 +655,26 @@ class UpdateCenter(Adw.Application):
         return GLib.SOURCE_REMOVE
 
     def _operation_finished(self, code):
+        if self.operation_parse_buffer:
+            match = PACMAN_ACTION.search(self.operation_parse_buffer)
+            if match:
+                _index, _total, action, name = match.groups()
+                self.operation_current_package = name
+                self.operation_current_action = action.casefold()
+                self._set_operation_package_status(name, "running", self.operation_current_action)
+            self.operation_parse_buffer = ""
+        if code == 0:
+            if self.operation_current_package:
+                self._set_operation_package_status(self.operation_current_package, "done")
+            self.operation_current_package = None
+            self._update_operation_progress()
+            for name, widgets in self.operation_package_rows.items():
+                if not widgets["check"].get_visible():
+                    self._set_operation_package_status(name, "skipped")
+        elif self.operation_current_package:
+            self._set_operation_package_status(self.operation_current_package, "failed")
+            self.operation_current_package = None
+            self._update_operation_progress()
         if self.password_dialog:
             self.password_dialog.response("cancel")
         self.operation_active = False

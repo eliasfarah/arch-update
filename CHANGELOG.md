@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.6
+
+- Mostra o andamento de cada pacote durante a instalação, com estados de fila, execução, conclusão e falha.
+- Mantém a saída do terminal recolhida e acessível pelo botão **Ver terminal**.
+- Corrige a consulta temporária no pacman 7 quando executada com fakeroot.
+
 ## 0.4.5
 
 - Sincroniza bases temporárias para mostrar a prévia atual dos repositórios sem alterar a base real do pacman.
