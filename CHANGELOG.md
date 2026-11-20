@@ -2,6 +2,8 @@
 
 ## 0.4.6
 
+- Simplifica a interface, mostra um indicador durante a consulta e oferece uma opção para verificar novamente.
+- Acrescenta o diálogo Sobre ao menu da janela e uma lista resumida dos pacotes processados.
 - Mostra o andamento de cada pacote durante a instalação, com estados de fila, execução, conclusão e falha.
 - Mantém a saída do terminal recolhida e acessível pelo botão **Ver terminal**.
 - Corrige a consulta temporária no pacman 7 quando executada com fakeroot.

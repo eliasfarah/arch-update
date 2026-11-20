@@ -20,6 +20,7 @@ from update_backend import UpdateSession
 
 
 APP_ID = "io.github.farah.archupdatecenter"
+APP_VERSION = "0.4.6"
 APP_STYLES = b"""
 label.category-dot { font-size: 11px; }
 label.category-core, .package-accent.category-core { color: #62a0ea; background-color: #62a0ea; }
@@ -40,6 +41,7 @@ label.category-count.category-other, label.source-chip.category-other { backgrou
 .package-accent { border-radius: 3px; }
 label.package-status-done { color: #2ec27e; font-weight: 600; }
 image.package-status-done { color: #2ec27e; }
+.package-activity { color: @accent_color; min-width: 24px; min-height: 24px; }
 label.package-status-failed { color: #e01b24; font-weight: 600; }
 label.package-status-pending { color: alpha(currentColor, 0.62); }
 label.package-status-skipped { color: alpha(currentColor, 0.62); }
@@ -73,6 +75,7 @@ class UpdateCenter(Adw.Application):
         self.password_dialog = None
         self.password_request = None
         self.operation_package_rows = {}
+        self.operation_finished_view = False
         self.operation_parse_buffer = ""
         self.operation_current_package = None
         self.operation_current_action = "installing"
@@ -110,6 +113,14 @@ class UpdateCenter(Adw.Application):
 
         header = Adw.HeaderBar()
         header.set_title_widget(Gtk.Label(label="Atualizações", css_classes=["title"]))
+        about_action = Gio.SimpleAction.new("about", None)
+        about_action.connect("activate", self._show_about)
+        self.add_action(about_action)
+        menu = Gio.Menu()
+        menu.append("Sobre a Central de atualizações", "app.about")
+        menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic", tooltip_text="Menu principal")
+        menu_button.set_menu_model(menu)
+        header.pack_end(menu_button)
         self.refresh_button = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Procurar atualizações")
         self.refresh_button.add_css_class("flat")
         self.refresh_button.connect("clicked", lambda *_: self.refresh())
@@ -132,12 +143,6 @@ class UpdateCenter(Adw.Application):
         self.page_subtitle.set_wrap(True)
         content.append(self.page_title)
         content.append(self.page_subtitle)
-
-        self.summary = Adw.ActionRow(title="Procurando atualizações…", subtitle="A lista de pacotes aparecerá aqui")
-        self.summary.set_icon_name("system-software-update-symbolic")
-        card = Gtk.ListBox(css_classes=["boxed-list"])
-        card.append(self.summary)
-        content.append(card)
 
         self.notice = Adw.Banner(title="")
         self.notice.set_revealed(False)
@@ -174,6 +179,27 @@ class UpdateCenter(Adw.Application):
         self.package_scroller.set_child(self.package_list)
         self.package_page.append(self.package_scroller)
 
+        self.loading_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14,
+                                    halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+        self.loading_spinner = Gtk.Spinner()
+        self.loading_spinner.set_size_request(48, 48)
+        self.loading_spinner.add_css_class("package-activity")
+        self.loading_page.append(self.loading_spinner)
+        loading_title = Gtk.Label(label="Buscando atualizações", css_classes=["heading"])
+        self.loading_page.append(loading_title)
+        loading_detail = Gtk.Label(label="Consultando os repositórios e o AUR…", css_classes=["dim-label"])
+        self.loading_page.append(loading_detail)
+        self.pages.add_named(self.loading_page, "loading")
+        self.empty_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16,
+                                  halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+        empty_label = Gtk.Label(label="Nenhum pacote disponível", css_classes=["heading", "dim-label"])
+        self.empty_page.append(empty_label)
+        check_again = Gtk.Button(label="Verificar novamente", halign=Gtk.Align.CENTER)
+        check_again.add_css_class("pill")
+        check_again.connect("clicked", lambda *_: self.refresh())
+        self.empty_page.append(check_again)
+        self.pages.add_named(self.empty_page, "empty")
+
         self.operation_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, vexpand=True)
         self.pages.add_named(self.operation_page, "operation")
         operation_header = Gtk.Box(spacing=10)
@@ -198,6 +224,7 @@ class UpdateCenter(Adw.Application):
         self.operation_package_list = Gtk.ListBox()
         self.operation_package_list.set_selection_mode(Gtk.SelectionMode.NONE)
         self.operation_package_list.set_placeholder(self.operation_package_placeholder)
+        self.operation_package_list.set_filter_func(self._filter_operation_package)
         self.operation_package_scroller = Gtk.ScrolledWindow(vexpand=True, min_content_height=150,
                                                               hscrollbar_policy=Gtk.PolicyType.NEVER)
         self.operation_package_scroller.add_css_class("boxed-list")
@@ -223,6 +250,7 @@ class UpdateCenter(Adw.Application):
         self.operation_log_toggle.connect("toggled", self._toggle_operation_log)
 
         bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        self.bottom_box = bottom
         bottom.set_margin_top(12)
         bottom.set_margin_bottom(18)
         bottom.set_margin_start(26)
@@ -235,8 +263,21 @@ class UpdateCenter(Adw.Application):
         self.apply_button.add_css_class("pill")
         self.apply_button.connect("clicked", self.on_primary_action)
         bottom.append(self.apply_button)
-        root.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        self.bottom_separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        root.append(self.bottom_separator)
         root.append(bottom)
+
+    def _show_about(self, *_):
+        dialog = Adw.AboutDialog(
+            application_name="Central de atualizações do Arch",
+            application_icon=APP_ID,
+            version=APP_VERSION,
+            developer_name="Elias Farah",
+            website="https://github.com/eliasfarah/arch-update",
+            issue_url="https://github.com/eliasfarah/arch-update/issues",
+            comments="Consulte e instale atualizações do Arch Linux e do AUR.",
+        )
+        dialog.present(self.window)
 
     def set_busy(self, busy):
         self.busy = busy
@@ -309,16 +350,17 @@ class UpdateCenter(Adw.Application):
     def refresh(self):
         if self.busy:
             return
+        for widget in (self.page_title, self.page_subtitle, self.bottom_box, self.bottom_separator):
+            widget.set_visible(True)
         self.awaiting_refresh = False
         self.query_ok = False
-        self.pages.set_visible_child_name("packages")
+        self.pages.set_visible_child_name("loading")
+        self.loading_spinner.start()
         self.page_title.set_label("Revise antes de instalar")
         self.page_subtitle.set_label("Confira os nomes e as versões que serão atualizadas.")
         self.refresh_button.set_sensitive(True)
         self.set_busy(True)
         self.set_notice()
-        self.summary.set_title("Procurando atualizações…")
-        self.summary.set_subtitle("Atualizando a prévia com bases temporárias dos repositórios")
         self.count.set_label("")
         self.search.set_text("")
         self.search.set_visible(False)
@@ -348,6 +390,12 @@ class UpdateCenter(Adw.Application):
             GLib.idle_add(self._show_updates, [], str(exc), 1)
 
     def _show_updates(self, entries, err, code):
+        self.loading_spinner.stop()
+        self.pages.set_visible_child_name("packages")
+        self.package_placeholder.set_text(
+            "Não foi possível carregar os pacotes" if err or code not in (0, 1, 2)
+            else "Nenhuma atualização disponível"
+        )
         self.set_busy(False)
         self.apply_button.set_label("Instalar atualizações")
         self.packages = entries
@@ -415,16 +463,17 @@ class UpdateCenter(Adw.Application):
         self.count.set_label((f"{len(entries)} pacote" if len(entries) == 1 else f"{len(entries)} pacotes") if entries else "")
         self.search.set_visible(bool(entries))
         if entries:
-            self.summary.set_title(f"{len(entries)} atualizações disponíveis")
-            self.summary.set_subtitle(f"Bases sincronizadas · consultada às {datetime.now().strftime('%H:%M')}")
-            self.set_notice("Ao clicar em Instalar, yay sincroniza e instala tudo que encontrar, sem outra confirmação. A lista pode mudar desde esta prévia.")
+            self.page_title.set_label("Atualizações disponíveis")
+            self.page_subtitle.set_label(f"Consultado às {datetime.now().strftime('%H:%M')} · A lista pode mudar antes da instalação.")
+            self.set_notice()
         elif not err and code in (0, 1, 2):
-            self.summary.set_title("Nenhuma atualização disponível")
-            self.summary.set_subtitle(f"Bases sincronizadas · consultada às {datetime.now().strftime('%H:%M')}")
-            self.set_notice("Clique em Verificar e atualizar para sincronizar e instalar automaticamente qualquer atualização encontrada.")
+            self.pages.set_visible_child_name("empty")
+            self.set_notice()
+            for widget in (self.page_title, self.page_subtitle, self.bottom_box, self.bottom_separator):
+                widget.set_visible(False)
         else:
-            self.summary.set_title("Não foi possível procurar atualizações")
-            self.summary.set_subtitle("Confira a conexão e tente novamente")
+            self.page_title.set_label("Não foi possível procurar atualizações")
+            self.page_subtitle.set_label("Confira a mensagem e tente novamente.")
             self.set_notice(err or "Confira a conexão com a internet e tente novamente.", True)
         self.apply_button.set_sensitive(self.query_ok)
         self.update_primary_button()
@@ -448,6 +497,8 @@ class UpdateCenter(Adw.Application):
             self.operation_package_list.remove(child)
             child = nxt
         self.operation_package_rows.clear()
+        self.operation_finished_view = False
+        self.operation_package_list.invalidate_filter()
         self.operation_current_package = None
         self.operation_current_action = "installing"
         self.operation_parse_buffer = ""
@@ -463,6 +514,7 @@ class UpdateCenter(Adw.Application):
             row.set_subtitle(source)
         row.set_activatable(False)
         row.set_selectable(False)
+        row.operation_state = "pending"
         if group in {"core", "extra", "multilib", "aur", "other"}:
             accent = Gtk.Box()
             accent.set_size_request(4, 28)
@@ -473,10 +525,11 @@ class UpdateCenter(Adw.Application):
         status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         status_box.set_valign(Gtk.Align.CENTER)
         spinner = Gtk.Spinner()
-        spinner.set_size_request(16, 16)
+        spinner.set_size_request(24, 24)
+        spinner.add_css_class("package-activity")
         spinner.set_visible(False)
         status_box.append(spinner)
-        status = Gtk.Label(label="Na fila", css_classes=["caption", "package-status-pending"])
+        status = Gtk.Label(label="Aguardando", css_classes=["caption", "package-status-pending"])
         status_box.append(status)
         check = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
         check.add_css_class("package-status-done")
@@ -489,6 +542,9 @@ class UpdateCenter(Adw.Application):
         }
         return self.operation_package_rows[name]
 
+    def _filter_operation_package(self, row):
+        return not self.operation_finished_view or getattr(row, "operation_state", "pending") in ("done", "failed")
+
     def _set_operation_package_status(self, name, state, action="installing"):
         widgets = self.operation_package_rows.get(name)
         if not widgets:
@@ -496,6 +552,7 @@ class UpdateCenter(Adw.Application):
         spinner = widgets["spinner"]
         status = widgets["status"]
         check = widgets["check"]
+        widgets["row"].operation_state = state
         spinner.stop()
         spinner.set_visible(state == "running")
         if state == "running":
@@ -516,7 +573,7 @@ class UpdateCenter(Adw.Application):
             status.set_css_classes(["caption", "package-status-skipped"])
             check.set_visible(False)
         else:
-            status.set_label("Na fila")
+            status.set_label("Aguardando")
             status.set_css_classes(["caption", "package-status-pending"])
             check.set_visible(False)
         self._update_operation_progress()
@@ -575,8 +632,7 @@ class UpdateCenter(Adw.Application):
         self.pages.set_visible_child_name("operation")
         self.page_title.set_label("Atualização em andamento")
         self.page_subtitle.set_label("Acompanhe o processo aqui. A Central solicitará sua senha quando necessário.")
-        self.summary.set_title("Preparando a atualização…")
-        self.summary.set_subtitle("Mantenha o computador ligado até terminar")
+        self.page_subtitle.set_label("Mantenha o computador ligado até terminar.")
         self.set_notice()
         self.operation_label.set_label("Preparando a atualização…")
         self.operation_log.get_buffer().set_text("")
@@ -603,8 +659,7 @@ class UpdateCenter(Adw.Application):
             self.pages.set_visible_child_name("packages")
             self.page_title.set_label("Revise antes de instalar")
             self.page_subtitle.set_label("Confira os nomes e as versões que serão atualizadas.")
-            self.summary.set_title("Não foi possível iniciar")
-            self.summary.set_subtitle("Confira a mensagem e tente novamente")
+            self.page_title.set_label("Não foi possível iniciar")
             self.set_busy(False)
             self.set_notice(str(exc), True)
 
@@ -678,6 +733,10 @@ class UpdateCenter(Adw.Application):
         if self.password_dialog:
             self.password_dialog.response("cancel")
         self.operation_active = False
+        self.operation_finished_view = True
+        self.operation_package_list.invalidate_filter()
+        completed = sum(item["row"].operation_state == "done" for item in self.operation_package_rows.values())
+        self.operation_package_placeholder.set_label("Nenhum pacote foi processado nesta operação.")
         self.session = None
         self.operation_spinner.stop()
         self.awaiting_refresh = True
@@ -686,16 +745,14 @@ class UpdateCenter(Adw.Application):
         if code == 0:
             self._request_indicator_refresh()
         self.page_title.set_label("Processo finalizado" if code == 0 else "Atualização interrompida")
-        self.page_subtitle.set_label("Confira os detalhes abaixo e volte à lista quando quiser.")
+        self.page_subtitle.set_label("Confira os pacotes processados nesta operação.")
         if code == 0:
-            self.summary.set_title("O yay terminou")
-            self.summary.set_subtitle("Confira a lista para ver se há atualizações pendentes")
-            self.operation_label.set_label("Processo finalizado")
+            self.operation_label.set_label("Atualização concluída")
+            self.operation_progress_label.set_label(f"{completed} pacote" + ("s" if completed != 1 else "") + " processado" + ("s" if completed != 1 else ""))
             self.set_notice("Se o kernel ou componentes centrais foram atualizados, reinicie o computador.")
         else:
-            self.summary.set_title("A atualização não foi concluída")
-            self.summary.set_subtitle(f"O yay terminou com código {code}. Consulte os detalhes abaixo.")
             self.operation_label.set_label("Confira os detalhes da operação")
+            self.operation_progress_label.set_label(f"{completed} pacote" + ("s" if completed != 1 else "") + " concluído" + ("s" if completed != 1 else ""))
             self.set_notice("Alguns pacotes podem já ter sido atualizados. Confira os detalhes antes de tentar novamente.", True)
         self.update_primary_button()
         return GLib.SOURCE_REMOVE
