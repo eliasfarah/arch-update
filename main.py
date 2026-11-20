@@ -20,7 +20,7 @@ from update_backend import UpdateSession
 
 
 APP_ID = "io.github.farah.archupdatecenter"
-APP_VERSION = "0.4.6"
+APP_VERSION = "0.4.7"
 APP_STYLES = b"""
 label.category-dot { font-size: 11px; }
 label.category-core, .package-accent.category-core { color: #62a0ea; background-color: #62a0ea; }
@@ -48,7 +48,7 @@ label.package-status-skipped { color: alpha(currentColor, 0.62); }
 """
 
 PACMAN_ACTION = re.compile(
-    r"\(\s*(\d+)\s*/\s*(\d+)\)\s+"
+    r"(?:\(\s*\d+\s*/\s*\d+\)\s+)?"
     r"(upgrading|installing|reinstalling|downgrading|removing)\s+"
     r"([^\s]+?)(?:\.{3,})?\s*$",
     re.IGNORECASE,
@@ -60,6 +60,11 @@ PACMAN_ACTION_LABELS = {
     "downgrading": "Revertendo",
     "removing": "Removendo",
 }
+
+
+def requires_restart(name):
+    return name in {"linux", "linux-lts", "linux-zen", "linux-hardened",
+                    "linux-cachyos", "linux-xanmod", "linux-tkg", "amd-ucode", "intel-ucode"}
 
 
 class UpdateCenter(Adw.Application):
@@ -465,7 +470,7 @@ class UpdateCenter(Adw.Application):
         if entries:
             self.page_title.set_label("Atualizações disponíveis")
             self.page_subtitle.set_label(f"Consultado às {datetime.now().strftime('%H:%M')} · A lista pode mudar antes da instalação.")
-            self.set_notice()
+            self.set_notice("Esta atualização inclui componentes que exigem reiniciar o computador." if any(requires_restart(item[0]) for item in entries) else "")
         elif not err and code in (0, 1, 2):
             self.pages.set_visible_child_name("empty")
             self.set_notice()
@@ -606,7 +611,7 @@ class UpdateCenter(Adw.Application):
             match = PACMAN_ACTION.search(line)
             if not match:
                 continue
-            _index, _total, action, name = match.groups()
+            action, name = match.groups()
             if self.operation_current_package and self.operation_current_package != name:
                 self._set_operation_package_status(self.operation_current_package, "done")
             self.operation_current_package = name
@@ -713,7 +718,7 @@ class UpdateCenter(Adw.Application):
         if self.operation_parse_buffer:
             match = PACMAN_ACTION.search(self.operation_parse_buffer)
             if match:
-                _index, _total, action, name = match.groups()
+                action, name = match.groups()
                 self.operation_current_package = name
                 self.operation_current_action = action.casefold()
                 self._set_operation_package_status(name, "running", self.operation_current_action)
@@ -749,13 +754,36 @@ class UpdateCenter(Adw.Application):
         if code == 0:
             self.operation_label.set_label("Atualização concluída")
             self.operation_progress_label.set_label(f"{completed} pacote" + ("s" if completed != 1 else "") + " processado" + ("s" if completed != 1 else ""))
-            self.set_notice("Se o kernel ou componentes centrais foram atualizados, reinicie o computador.")
+            self.set_notice()
+            if any(requires_restart(name) and item["row"].operation_state == "done"
+                   for name, item in self.operation_package_rows.items()):
+                self._offer_restart()
         else:
             self.operation_label.set_label("Confira os detalhes da operação")
             self.operation_progress_label.set_label(f"{completed} pacote" + ("s" if completed != 1 else "") + " concluído" + ("s" if completed != 1 else ""))
             self.set_notice("Alguns pacotes podem já ter sido atualizados. Confira os detalhes antes de tentar novamente.", True)
         self.update_primary_button()
         return GLib.SOURCE_REMOVE
+
+    def _offer_restart(self):
+        dialog = Adw.MessageDialog(transient_for=self.window, heading="Reiniciar agora?",
+                                   body="Algumas atualizações precisam de uma reinicialização. Salve seu trabalho antes de continuar.")
+        dialog.add_response("later", "Mais tarde")
+        dialog.add_response("restart", "Reiniciar")
+        dialog.set_response_appearance("restart", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("later")
+        dialog.set_close_response("later")
+
+        def respond(_dialog, response):
+            if response == "restart":
+                try:
+                    Gio.DBusProxy.new_for_bus_sync(Gio.BusType.SESSION, Gio.DBusProxyFlags.NONE, None,
+                        "org.gnome.SessionManager", "/org/gnome/SessionManager", "org.gnome.SessionManager", None
+                    ).call("Reboot", None, Gio.DBusCallFlags.NONE, -1, None, None, None)
+                except GLib.Error as exc:
+                    self.set_notice(f"Não foi possível solicitar o reinício: {exc.message}", True)
+        dialog.connect("response", respond)
+        dialog.present()
 
     def _request_indicator_refresh(self):
         cache_dir = os.path.join(GLib.get_user_cache_dir(), "arch-update-center")

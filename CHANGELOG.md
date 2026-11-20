@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.7
+
+- Corrige o reconhecimento do andamento dos pacotes e a lista exibida ao final.
+- Avisa antes de atualizar kernels conhecidos ou microcódigo e oferece reiniciar ao concluir.
+
 ## 0.4.6
 
 - Simplifica a interface, mostra um indicador durante a consulta e oferece uma opção para verificar novamente.
